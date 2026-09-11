@@ -53,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} connects the modern iOS 16 notification path to Watusi's own scheduled-message helper."
+              --notes "iOS 16 rootless build. ${TAG} reads Watusi's real schedule store in WhatsApp's app container and forwards due schedule IDs through Watusi's own PushKit wake path."
           fi
