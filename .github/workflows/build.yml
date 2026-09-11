@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -23,9 +26,24 @@ jobs:
       - name: Build rootless package
         run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
-      - name: Upload deb
+      - name: Upload deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: Watusi-Scheduled-MsgFix-rootless
           path: packages/*.deb
           if-no-files-found: error
+
+      - name: Publish v1.0.0 GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DEB="$(ls packages/*.deb | head -n 1)"
+          if gh release view v1.0.0 >/dev/null 2>&1; then
+            gh release upload v1.0.0 "$DEB" --clobber
+          else
+            gh release create v1.0.0 "$DEB" \
+              --target "$GITHUB_SHA" \
+              --title "Watusi Scheduled Message Fix v1.0.0" \
+              --notes "First test build for iOS 16.2 Dopamine. Targets Watusi scheduled messages failing to send when WhatsApp is closed or the device is locked. Built for rootless arm64/arm64e."
+          fi
