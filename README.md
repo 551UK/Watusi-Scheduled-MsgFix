@@ -16,6 +16,10 @@ This tweak hooks that launch-prevention check and returns **not prevented only f
 - Watusi 3 1.3.23
 - WatusiTools 2.8.4
 
+## Install / use
+
+Install the package and it works automatically. There is no settings page or toggle in this first test build because the fix is deliberately limited to Watusi's WhatsApp wake path.
+
 ## Build
 
 The GitHub Actions workflow builds a rootless `iphoneos-arm64` package with Theos. The tweak injects only into `callservicesd` / `com.apple.calls.telephonyutilities`.
