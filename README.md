@@ -1,21 +1,18 @@
 # Watusi Scheduled Message Fix
 
-A rootless companion tweak for **Watusi 3** that targets scheduled messages failing to send when WhatsApp is closed or the device is locked.
+Rootless companion tweak for Watusi 3 on iOS 16.
 
-## The iOS 16 problem
+## v1.0.2
 
-Watusi schedules a normal iOS local notification containing `WatusiMessageScheduleID`. On older notification paths, Watusi catches that notification in SpringBoard and converts it into its fake WhatsApp VoIP push, which wakes WhatsApp and processes the scheduled message.
+This version no longer relies on the iOS notification-dispatch path. SpringBoard reads Watusi's saved schedule store, watches each schedule ID and date, and at the due time calls Watusi's own scheduler helper directly. If that helper is unavailable, the tweak falls back to Watusi's existing running-schedule plist and Darwin notification bridge.
 
-On the iOS 16 notification path used by `CSNotificationDispatcher` / `SBDashBoardNotificationDispatcher`, Watusi handles notification images but does not run its scheduled-message bridge. The scheduled time therefore passes without the message being processed, and Watusi later shows **Schedule date has passed**.
+The callservicesd launch safeguard from earlier builds is also retained.
 
-## v1.0.1
+Diagnostics are written to:
 
-- Adds the missing iOS 16 SpringBoard scheduled-notification bridge.
-- Reads the Watusi schedule ID from the due notification.
-- Reuses Watusi's existing `running-schedule-info.plist` + Darwin notification + `callservicesd` VoIP-push path.
-- Keeps the v1.0.0 WhatsApp launch-prevention safeguard as a secondary fix.
-- Prevents duplicate forwarding if both modern notification dispatchers see the same schedule.
-- Writes a small diagnostics file at `/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist` containing only hook/status information, not message text.
+`/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist`
+
+No message text or recipient names are logged.
 
 ## Target setup
 
@@ -24,5 +21,3 @@ On the iOS 16 notification path used by `CSNotificationDispatcher` / `SBDashBoar
 - WhatsApp 26.32.75
 - Watusi 3 1.3.23
 - WatusiTools 2.8.4
-
-Install the package and test a scheduled message with WhatsApp fully closed and the phone locked. The package reloads SpringBoard and `callservicesd` after installation.
