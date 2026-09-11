@@ -1,0 +1,30 @@
+name: Build rootless deb
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          libgcuniversal: 'false'
+          altlist: 'false'
+
+      - name: Build rootless package
+        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: Watusi-Scheduled-MsgFix-rootless
+          path: packages/*.deb
+          if-no-files-found: error

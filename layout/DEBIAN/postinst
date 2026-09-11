@@ -1,0 +1,11 @@
+#!/bin/sh
+
+if [ "$1" = "configure" ]; then
+    if [ -x /var/jb/usr/bin/killall ]; then
+        /var/jb/usr/bin/killall -9 callservicesd 2>/dev/null || true
+    elif [ -x /usr/bin/killall ]; then
+        /usr/bin/killall -9 callservicesd 2>/dev/null || true
+    fi
+fi
+
+exit 0
