@@ -3,10 +3,30 @@
 if [ "$1" = "configure" ]; then
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist 2>/dev/null || true
 
+    # Clean up the short-lived v1.0.3 LaunchDaemon design if it is still resident.
+    if [ -x /bin/launchctl ]; then
+        /bin/launchctl bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
+    elif [ -x /var/jb/bin/launchctl ]; then
+        /var/jb/bin/launchctl bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
+    fi
+
+    if [ -x /var/jb/usr/bin/killall ]; then
+        /var/jb/usr/bin/killall -9 WatusiScheduledMsgDaemon 2>/dev/null || true
+        /var/jb/usr/bin/killall -9 callservicesd 2>/dev/null || true
+    elif [ -x /usr/bin/killall ]; then
+        /usr/bin/killall -9 WatusiScheduledMsgDaemon 2>/dev/null || true
+        /usr/bin/killall -9 callservicesd 2>/dev/null || true
+    fi
+
+    # Required so no older 1.0.1/1.0.2 SpringBoard code remains in memory.
     if [ -x /var/jb/usr/bin/sbreload ]; then
         /var/jb/usr/bin/sbreload 2>/dev/null || true
     elif [ -x /usr/bin/sbreload ]; then
         /usr/bin/sbreload 2>/dev/null || true
+    elif [ -x /var/jb/usr/bin/killall ]; then
+        /var/jb/usr/bin/killall -9 SpringBoard 2>/dev/null || true
+    elif [ -x /usr/bin/killall ]; then
+        /usr/bin/killall -9 SpringBoard 2>/dev/null || true
     fi
 fi
 
