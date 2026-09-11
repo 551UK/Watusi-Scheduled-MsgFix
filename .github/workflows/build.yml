@@ -53,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. v1.0.1 adds the missing modern SpringBoard scheduled-notification bridge so Watusi can wake WhatsApp and process a due scheduled message while the app is closed or the device is locked."
+              --notes "iOS 16 rootless build. ${TAG} runs a background scheduler against Watusi's real WhatsApp app-container schedule store and forwards due schedule IDs through Watusi's existing PushKit/callservicesd wake path."
           fi
