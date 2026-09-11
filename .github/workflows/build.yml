@@ -23,6 +23,12 @@ jobs:
           libgcuniversal: 'false'
           altlist: 'false'
 
+      - name: Read package version
+        id: package
+        run: |
+          VERSION="$(awk '/^Version:/ {print $2; exit}' control)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build rootless package
         run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
@@ -33,17 +39,19 @@ jobs:
           path: packages/*.deb
           if-no-files-found: error
 
-      - name: Publish v1.0.0 GitHub Release
+      - name: Publish GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
         run: |
           DEB="$(ls packages/*.deb | head -n 1)"
-          if gh release view v1.0.0 >/dev/null 2>&1; then
-            gh release upload v1.0.0 "$DEB" --clobber
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DEB" --clobber
           else
-            gh release create v1.0.0 "$DEB" \
+            gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
-              --title "Watusi Scheduled Message Fix v1.0.0" \
-              --notes "First test build for iOS 16.2 Dopamine. Targets Watusi scheduled messages failing to send when WhatsApp is closed or the device is locked. Built for rootless arm64/arm64e."
+              --title "Watusi Scheduled Message Fix ${TAG}" \
+              --notes "iOS 16 rootless build. v1.0.1 adds the missing modern SpringBoard scheduled-notification bridge so Watusi can wake WhatsApp and process a due scheduled message while the app is closed or the device is locked."
           fi

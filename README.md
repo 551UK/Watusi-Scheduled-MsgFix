@@ -1,14 +1,23 @@
 # Watusi Scheduled Message Fix
 
-A small rootless companion tweak for **Watusi 3** that targets scheduled messages failing to send when WhatsApp is closed or the device is locked.
+A rootless companion tweak for **Watusi 3** that targets scheduled messages failing to send when WhatsApp is closed or the device is locked.
 
-## What it fixes
+## The iOS 16 problem
 
-Watusi already wakes WhatsApp for scheduled messages through `callservicesd` using its VoIP push path. On the affected iOS 16 setup, iOS can still report WhatsApp as prevented from being launched, so the scheduled trigger works while WhatsApp is alive but fails when iOS needs to launch it.
+Watusi schedules a normal iOS local notification containing `WatusiMessageScheduleID`. On older notification paths, Watusi catches that notification in SpringBoard and converts it into its fake WhatsApp VoIP push, which wakes WhatsApp and processes the scheduled message.
 
-This tweak hooks that launch-prevention check and returns **not prevented only for WhatsApp / WhatsApp Business**. Other apps keep the normal iOS behaviour.
+On the iOS 16 notification path used by `CSNotificationDispatcher` / `SBDashBoardNotificationDispatcher`, Watusi handles notification images but does not run its scheduled-message bridge. The scheduled time therefore passes without the message being processed, and Watusi later shows **Schedule date has passed**.
 
-## Tested target
+## v1.0.1
+
+- Adds the missing iOS 16 SpringBoard scheduled-notification bridge.
+- Reads the Watusi schedule ID from the due notification.
+- Reuses Watusi's existing `running-schedule-info.plist` + Darwin notification + `callservicesd` VoIP-push path.
+- Keeps the v1.0.0 WhatsApp launch-prevention safeguard as a secondary fix.
+- Prevents duplicate forwarding if both modern notification dispatchers see the same schedule.
+- Writes a small diagnostics file at `/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist` containing only hook/status information, not message text.
+
+## Target setup
 
 - iOS 16.2
 - Dopamine rootless
@@ -16,14 +25,4 @@ This tweak hooks that launch-prevention check and returns **not prevented only f
 - Watusi 3 1.3.23
 - WatusiTools 2.8.4
 
-## Install / use
-
-Install the package and it works automatically. There is no settings page or toggle in this first test build because the fix is deliberately limited to Watusi's WhatsApp wake path.
-
-## Build
-
-The GitHub Actions workflow builds a rootless `iphoneos-arm64` package with Theos. The tweak injects only into `callservicesd` / `com.apple.calls.telephonyutilities`.
-
-## Status
-
-`1.0.0` is the first targeted build for testing the closed/locked scheduled-message path.
+Install the package and test a scheduled message with WhatsApp fully closed and the phone locked. The package reloads SpringBoard and `callservicesd` after installation.
