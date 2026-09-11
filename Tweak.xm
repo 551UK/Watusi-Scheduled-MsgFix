@@ -1,30 +1,20 @@
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 #import <notify.h>
 
 static NSString * const WSSMFWhatsAppBundle = @"net.whatsapp.WhatsApp";
 static NSString * const WSSMFWhatsAppBusinessBundle = @"net.whatsapp.WhatsAppSMB";
 static NSString * const WSSMFScheduleIDKey = @"WatusiMessageScheduleID";
+static NSString * const WSSMFSchedulesPath = @"/var/mobile/Library/Preferences/com.fouadraheb.watusi.scheduled-messages.plist";
 static NSString * const WSSMFRunningSchedulePath = @"/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist";
 static NSString * const WSSMFDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist";
+static NSString * const WSSMFFiredPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-fired.plist";
 static const char *WSSMFPushNotificationName = "com.fouadraheb.watusi.pushkit-notification";
 
-static id WSSMFSafeValue(id object, NSString *name) {
-    if (!object || !name.length) return nil;
-
-    SEL selector = NSSelectorFromString(name);
-    @try {
-        if ([object respondsToSelector:selector]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            return [object performSelector:selector];
-#pragma clang diagnostic pop
-        }
-
-        return [object valueForKey:name];
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
+static NSArray *WSSMFCachedSchedules = nil;
+static NSMutableDictionary *WSSMFFired = nil;
+static dispatch_source_t WSSMFTimer = nil;
+static NSUInteger WSSMFTick = 0;
 
 static BOOL WSSMFIsWhatsAppBundle(NSString *bundleID) {
     if (![bundleID isKindOfClass:[NSString class]]) return NO;
@@ -37,225 +27,198 @@ static NSString *WSSMFBundleIdentifier(id object) {
         return WSSMFIsWhatsAppBundle(object) ? object : nil;
     }
 
-    for (NSString *name in @[@"sectionIdentifier", @"bundleIdentifier", @"bundleID", @"applicationBundleIdentifier"]) {
-        id value = WSSMFSafeValue(object, name);
-        if ([value isKindOfClass:[NSString class]] && WSSMFIsWhatsAppBundle(value)) {
-            return value;
-        }
-    }
-
-    id content = WSSMFSafeValue(object, @"content");
-    if (content && content != object) {
-        for (NSString *name in @[@"sectionIdentifier", @"bundleIdentifier", @"bundleID"]) {
-            id value = WSSMFSafeValue(content, name);
-            if ([value isKindOfClass:[NSString class]] && WSSMFIsWhatsAppBundle(value)) {
-                return value;
-            }
-        }
-    }
-
-    return nil;
-}
-
-static id WSSMFFindScheduleID(id object, NSUInteger depth) {
-    if (!object || depth > 5 || object == [NSNull null]) return nil;
-
-    if ([object isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dictionary = (NSDictionary *)object;
-        id direct = dictionary[WSSMFScheduleIDKey];
-        if (direct && direct != [NSNull null]) return direct;
-
-        NSArray *preferredKeys = @[@"userInfo", @"context", @"content", @"notification", @"request", @"UNBulletinContextArchivedUserNotification"];
-        for (NSString *key in preferredKeys) {
-            id value = dictionary[key];
-            id found = WSSMFFindScheduleID(value, depth + 1);
-            if (found) return found;
-        }
-
-        for (id value in dictionary.allValues) {
-            if ([value isKindOfClass:[NSDictionary class]] ||
-                [value isKindOfClass:[NSArray class]] ||
-                [value isKindOfClass:[NSData class]]) {
-                id found = WSSMFFindScheduleID(value, depth + 1);
-                if (found) return found;
-            }
-        }
-        return nil;
-    }
-
-    if ([object isKindOfClass:[NSArray class]]) {
-        for (id value in (NSArray *)object) {
-            id found = WSSMFFindScheduleID(value, depth + 1);
-            if (found) return found;
-        }
-        return nil;
-    }
-
-    if ([object isKindOfClass:[NSData class]]) {
+    NSArray *selectorNames = @[@"bundleIdentifier", @"bundleID", @"applicationBundleIdentifier", @"identifier"];
+    for (NSString *selectorName in selectorNames) {
+        SEL selector = NSSelectorFromString(selectorName);
         @try {
+            if ([object respondsToSelector:selector]) {
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            id decoded = [NSKeyedUnarchiver unarchiveObjectWithData:(NSData *)object];
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                id value = [object performSelector:selector];
 #pragma clang diagnostic pop
-            return WSSMFFindScheduleID(decoded, depth + 1);
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
-    }
-
-    for (NSString *name in @[@"userInfo", @"content", @"context"]) {
-        id value = WSSMFSafeValue(object, name);
-        if (value && value != object) {
-            id found = WSSMFFindScheduleID(value, depth + 1);
-            if (found) return found;
-        }
+                if ([value isKindOfClass:[NSString class]] && WSSMFIsWhatsAppBundle(value)) {
+                    return value;
+                }
+            }
+        } @catch (__unused NSException *exception) {}
     }
 
     return nil;
 }
 
-static NSString *WSSMFRequestIdentifier(id request) {
-    for (NSString *name in @[@"notificationIdentifier", @"requestIdentifier", @"identifier"]) {
-        id value = WSSMFSafeValue(request, name);
-        if ([value isKindOfClass:[NSString class]]) return value;
-    }
-    return nil;
-}
-
-static id WSSMFScheduleIDFromRequest(id request) {
-    id scheduleID = WSSMFFindScheduleID(request, 0);
-    if (scheduleID) return scheduleID;
-
-    // Watusi creates each local notification as "schedule-<uniqueID>".
-    // Use that as a fallback if iOS 16's modern notification object no longer
-    // exposes the original userInfo dictionary directly.
-    NSString *identifier = WSSMFRequestIdentifier(request);
-    if ([identifier hasPrefix:@"schedule-"] && identifier.length > 9) {
-        return [identifier substringFromIndex:9];
-    }
-
-    return nil;
-}
-
-static void WSSMFWriteDebug(NSString *hook, id request, NSString *bundleID, id scheduleID, NSString *result) {
+static void WSSMFWriteDebug(NSDictionary *extra) {
     NSMutableDictionary *debug = [NSMutableDictionary dictionary];
+    debug[@"version"] = @"1.0.2";
     debug[@"date"] = [NSDate date];
-    debug[@"version"] = @"1.0.1";
-    debug[@"hook"] = hook ?: @"unknown";
-    debug[@"requestClass"] = request ? NSStringFromClass([request class]) : @"nil";
-    debug[@"bundleID"] = bundleID ?: @"unknown";
-    debug[@"scheduleID"] = scheduleID ? [scheduleID description] : @"not-found";
-    debug[@"requestIdentifier"] = WSSMFRequestIdentifier(request) ?: @"not-found";
-    debug[@"result"] = result ?: @"unknown";
+    if (extra) [debug addEntriesFromDictionary:extra];
     [debug writeToFile:WSSMFDebugPath atomically:YES];
 }
 
-static NSMutableDictionary<NSString *, NSDate *> *WSSMFRecentSchedules(void) {
-    static NSMutableDictionary<NSString *, NSDate *> *recent;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        recent = [NSMutableDictionary dictionary];
-    });
-    return recent;
+static NSDate *WSSMFDateFromValue(id value) {
+    if ([value isKindOfClass:[NSDate class]]) return value;
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [NSDate dateWithTimeIntervalSince1970:[value doubleValue]];
+    }
+    if ([value isKindOfClass:[NSString class]]) {
+        static NSDateFormatter *formatter = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            formatter = [[NSDateFormatter alloc] init];
+            formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+            formatter.timeZone = [NSTimeZone localTimeZone];
+            formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss Z";
+        });
+        return [formatter dateFromString:value];
+    }
+    return nil;
 }
 
-static BOOL WSSMFClaimSchedule(id scheduleID, NSString *bundleID) {
-    NSString *key = [NSString stringWithFormat:@"%@|%@", bundleID ?: @"", [scheduleID description] ?: @""];
+static NSString *WSSMFKeyForSchedule(id scheduleID, NSDate *date) {
+    if (!scheduleID || !date) return nil;
+    long long milliseconds = (long long)llround([date timeIntervalSince1970] * 1000.0);
+    return [NSString stringWithFormat:@"%@|%lld", [scheduleID description], milliseconds];
+}
+
+static void WSSMFLoadFiredState(void) {
+    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:WSSMFFiredPath];
+    WSSMFFired = stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+
     NSDate *now = [NSDate date];
-
-    @synchronized (WSSMFRecentSchedules()) {
-        NSMutableDictionary *recent = WSSMFRecentSchedules();
-        NSArray *keys = [recent.allKeys copy];
-        for (NSString *oldKey in keys) {
-            NSDate *date = recent[oldKey];
-            if (!date || [now timeIntervalSinceDate:date] > 120.0) {
-                [recent removeObjectForKey:oldKey];
-            }
+    for (NSString *key in [WSSMFFired.allKeys copy]) {
+        NSDate *date = WSSMFFired[key];
+        if (![date isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:date] > 604800.0) {
+            [WSSMFFired removeObjectForKey:key];
         }
-
-        NSDate *last = recent[key];
-        if (last && [now timeIntervalSinceDate:last] < 120.0) {
-            return NO;
-        }
-
-        recent[key] = now;
-        return YES;
     }
 }
 
-static void WSSMFReleaseScheduleClaim(id scheduleID, NSString *bundleID) {
-    NSString *key = [NSString stringWithFormat:@"%@|%@", bundleID ?: @"", [scheduleID description] ?: @""];
-    @synchronized (WSSMFRecentSchedules()) {
-        [WSSMFRecentSchedules() removeObjectForKey:key];
+static void WSSMFMarkFired(NSString *key) {
+    if (!key.length) return;
+    if (!WSSMFFired) WSSMFLoadFiredState();
+    WSSMFFired[key] = [NSDate date];
+    [WSSMFFired writeToFile:WSSMFFiredPath atomically:YES];
+}
+
+static BOOL WSSMFAlreadyFired(NSString *key) {
+    if (!key.length) return YES;
+    if (!WSSMFFired) WSSMFLoadFiredState();
+    return WSSMFFired[key] != nil;
+}
+
+static void WSSMFReloadSchedules(void) {
+    NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:WSSMFSchedulesPath];
+    id schedules = [root isKindOfClass:[NSDictionary class]] ? root[@"schedules"] : nil;
+
+    if ([schedules isKindOfClass:[NSArray class]]) {
+        WSSMFCachedSchedules = [schedules copy];
+    } else {
+        WSSMFCachedSchedules = @[];
     }
 }
 
-static BOOL WSSMFForwardSchedule(id request, NSString *hookName) {
-    NSString *bundleID = WSSMFBundleIdentifier(request);
-    if (!WSSMFIsWhatsAppBundle(bundleID)) return NO;
+static BOOL WSSMFManualBridge(id scheduleID, NSString *bundleID) {
+    if (!scheduleID || !WSSMFIsWhatsAppBundle(bundleID)) return NO;
 
-    id scheduleID = WSSMFScheduleIDFromRequest(request);
-    if (!scheduleID) {
-        // No message contents are logged. This is only to show that the modern
-        // iOS 16 WhatsApp notification path was reached during testing.
-        WSSMFWriteDebug(hookName, request, bundleID, nil, @"whatsapp-request-no-schedule-id");
-        return NO;
-    }
-
-    if (!WSSMFClaimSchedule(scheduleID, bundleID)) {
-        WSSMFWriteDebug(hookName, request, bundleID, scheduleID, @"duplicate-suppressed");
-        return YES;
-    }
-
-    NSDictionary *pushUserInfo = @{ WSSMFScheduleIDKey: scheduleID };
     NSDictionary *runningSchedule = @{
-        @"userInfo": pushUserInfo,
+        @"userInfo": @{ WSSMFScheduleIDKey: scheduleID },
         @"bundleID": bundleID
     };
 
-    BOOL wrote = [runningSchedule writeToFile:WSSMFRunningSchedulePath atomically:YES];
-    if (!wrote) {
-        WSSMFReleaseScheduleClaim(scheduleID, bundleID);
-        WSSMFWriteDebug(hookName, request, bundleID, scheduleID, @"failed-writing-running-schedule-plist");
+    if (![runningSchedule writeToFile:WSSMFRunningSchedulePath atomically:YES]) {
         return NO;
     }
 
-    uint32_t notifyResult = notify_post(WSSMFPushNotificationName);
-    if (notifyResult != NOTIFY_STATUS_OK) {
-        WSSMFReleaseScheduleClaim(scheduleID, bundleID);
-        WSSMFWriteDebug(hookName, request, bundleID, scheduleID,
-                        [NSString stringWithFormat:@"notify-post-failed-%u", notifyResult]);
-        return NO;
+    return notify_post(WSSMFPushNotificationName) == NOTIFY_STATUS_OK;
+}
+
+static NSString *WSSMFFireSchedule(id scheduleID, NSString *bundleID) {
+    Class helperClass = NSClassFromString(@"WSSchedulerHelper");
+    SEL selector = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
+
+    if (helperClass && [helperClass respondsToSelector:selector]) {
+        @try {
+            ((void (*)(id, SEL, id, id))objc_msgSend)(helperClass, selector, scheduleID, bundleID);
+            return @"called-watusi-helper";
+        } @catch (__unused NSException *exception) {
+            // Fall through to the exact file + Darwin-notification path used by WatusiSB.
+        }
     }
 
-    WSSMFWriteDebug(hookName, request, bundleID, scheduleID, @"forwarded-to-watusi-pushkit-bridge");
-    return YES;
+    return WSSMFManualBridge(scheduleID, bundleID) ? @"manual-bridge-posted" : @"bridge-failed";
 }
 
-// iOS 16 modern notification route. WatusiSB hooks these same methods for its
-// notification-image feature, but unlike its older bulletin hooks it never
-// calls the scheduled-message helper here. We add the missing bridge.
-%hook CSNotificationDispatcher
+static void WSSMFCheckSchedules(void) {
+    WSSMFTick++;
+    if (!WSSMFCachedSchedules || (WSSMFTick % 5) == 0) {
+        WSSMFReloadSchedules();
+    }
 
-- (void)postNotificationRequest:(id)request {
-    WSSMFForwardSchedule(request, @"CSNotificationDispatcher");
-    %orig;
+    NSDate *now = [NSDate date];
+    for (id item in WSSMFCachedSchedules) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+
+        NSDictionary *schedule = (NSDictionary *)item;
+        id scheduleID = schedule[@"id"] ?: schedule[@"uniqueID"];
+        NSDate *scheduledDate = WSSMFDateFromValue(schedule[@"date"]);
+        if (!scheduleID || !scheduledDate) continue;
+
+        NSTimeInterval lateness = [now timeIntervalSinceDate:scheduledDate];
+        // Fire only at the actual due time. Ignore old inactive schedules so installing
+        // this tweak never suddenly sends historical messages.
+        if (lateness < 0.0 || lateness > 30.0) continue;
+
+        NSString *key = WSSMFKeyForSchedule(scheduleID, scheduledDate);
+        if (WSSMFAlreadyFired(key)) continue;
+
+        // This build targets the regular WhatsApp package used on the reported setup.
+        // The Watusi helper receives the same bundle identifier its SpringBoard hook used.
+        NSString *bundleID = WSSMFWhatsAppBundle;
+        NSString *result = WSSMFFireSchedule(scheduleID, bundleID);
+        WSSMFMarkFired(key);
+
+        WSSMFWriteDebug(@{
+            @"result": result ?: @"unknown",
+            @"source": @"direct-schedule-store",
+            @"scheduleID": [scheduleID description] ?: @"unknown",
+            @"scheduledDate": scheduledDate,
+            @"latenessSeconds": @(lateness),
+            @"bundleID": bundleID,
+            @"scheduleCount": @(WSSMFCachedSchedules.count),
+            @"helperClassFound": @(NSClassFromString(@"WSSchedulerHelper") != Nil)
+        });
+    }
 }
 
-%end
+static void WSSMFStartSpringBoardScheduler(void) {
+    WSSMFLoadFiredState();
+    WSSMFReloadSchedules();
 
-%hook SBDashBoardNotificationDispatcher
+    Class helperClass = NSClassFromString(@"WSSchedulerHelper");
+    SEL selector = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
+    WSSMFWriteDebug(@{
+        @"result": @"scheduler-started",
+        @"source": @"direct-schedule-store",
+        @"scheduleStoreExists": @([[NSFileManager defaultManager] fileExistsAtPath:WSSMFSchedulesPath]),
+        @"scheduleCount": @(WSSMFCachedSchedules.count),
+        @"helperClassFound": @(helperClass != Nil),
+        @"helperMethodFound": @(helperClass && [helperClass respondsToSelector:selector])
+    });
 
-- (void)postNotificationRequest:(id)request forCoalescedNotification:(id)coalescedNotification {
-    WSSMFForwardSchedule(request, @"SBDashBoardNotificationDispatcher");
-    %orig;
+    WSSMFTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    if (!WSSMFTimer) return;
+
+    dispatch_source_set_timer(WSSMFTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC),
+                              1 * NSEC_PER_SEC,
+                              100 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(WSSMFTimer, ^{
+        WSSMFCheckSchedules();
+    });
+    dispatch_resume(WSSMFTimer);
 }
 
-%end
-
-// Keep the v1.0.0 safeguard too. It was not enough by itself because the
-// scheduler trigger was missing, but it can still help once callservicesd is
-// actually asked to wake WhatsApp.
+// Keep the callservicesd launch safeguard from v1.0.0. Once Watusi's helper
+// posts its fake VoIP push, iOS must be allowed to wake WhatsApp.
 %hook CSDVoIPApplicationController
 
 - (BOOL)_isApplicationPreventedFromBeingLaunched:(id)application {
@@ -267,3 +230,15 @@ static BOOL WSSMFForwardSchedule(id request, NSString *hookName) {
 }
 
 %end
+
+%ctor {
+    @autoreleasepool {
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        NSString *processName = [[NSProcessInfo processInfo] processName];
+        if ([bundleID isEqualToString:@"com.apple.springboard"] || [processName isEqualToString:@"SpringBoard"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                WSSMFStartSpringBoardScheduler();
+            });
+        }
+    }
+}
