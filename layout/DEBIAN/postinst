@@ -6,6 +6,16 @@ if [ "$1" = "configure" ]; then
     elif [ -x /usr/bin/killall ]; then
         /usr/bin/killall -9 callservicesd 2>/dev/null || true
     fi
+
+    if [ -x /var/jb/usr/bin/sbreload ]; then
+        /var/jb/usr/bin/sbreload 2>/dev/null || true
+    elif [ -x /usr/bin/sbreload ]; then
+        /usr/bin/sbreload 2>/dev/null || true
+    elif [ -x /var/jb/usr/bin/killall ]; then
+        /var/jb/usr/bin/killall -9 SpringBoard 2>/dev/null || true
+    elif [ -x /usr/bin/killall ]; then
+        /usr/bin/killall -9 SpringBoard 2>/dev/null || true
+    fi
 fi
 
 exit 0
