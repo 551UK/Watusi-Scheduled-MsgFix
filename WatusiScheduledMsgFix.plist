@@ -6,11 +6,11 @@
     <dict>
         <key>Bundles</key>
         <array>
-            <string>com.apple.calls.telephonyutilities</string>
+            <string>com.apple.springboard</string>
         </array>
         <key>Executables</key>
         <array>
-            <string>callservicesd</string>
+            <string>SpringBoard</string>
         </array>
     </dict>
 </dict>
