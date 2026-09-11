@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    LAUNCHCTL="/bin/launchctl"
+    if [ ! -x "$LAUNCHCTL" ] && [ -x /var/jb/bin/launchctl ]; then
+        LAUNCHCTL="/var/jb/bin/launchctl"
+    fi
+
+    if [ -x "$LAUNCHCTL" ]; then
+        "$LAUNCHCTL" bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
+    fi
+fi
+
+exit 0
