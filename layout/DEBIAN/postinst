@@ -1,29 +1,42 @@
 #!/bin/sh
 
 if [ "$1" = "configure" ]; then
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-pending.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-native-debug.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-fired.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-callkit-gate.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-gate.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-dedupe.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-outbox.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-delivery-state.plist 2>/dev/null || true
-    rm -f /var/mobile/Library/Caches/com.551.watusischeduledmsgfix-send.plist 2>/dev/null || true
+    PREFS=/var/mobile/Library/Preferences
 
-    date +%s > /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-installed-at 2>/dev/null || true
-    chown 501:501 /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-installed-at 2>/dev/null || true
+    # Remove diagnostics and leftovers from older test builds.
+    rm -f \
+        "$PREFS/com.551.watusischeduledmsgfix-debug.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-debug.lock" \
+        "$PREFS/com.551.watusischeduledmsgfix-native-debug.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-dispatched.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-fired.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-callkit-gate.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-helper-gate.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-helper-dedupe.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-outbox.plist" \
+        "$PREFS/com.551.watusischeduledmsgfix-delivery-state.plist" \
+        /var/mobile/Library/Caches/com.551.watusischeduledmsgfix-send.plist \
+        "$PREFS/com.fouadraheb.running-schedule-info.plist" \
+        /var/jb/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist \
+        2>/dev/null || true
 
-    rm -f /var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist 2>/dev/null || true
-    rm -f /var/jb/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist 2>/dev/null || true
+    # Keep existing pending/sent state across upgrades. Only create the install
+    # timestamp if it does not already exist.
+    if [ ! -s "$PREFS/com.551.watusischeduledmsgfix-installed-at" ]; then
+        date +%s > "$PREFS/com.551.watusischeduledmsgfix-installed-at" 2>/dev/null || true
+        chown 501:501 "$PREFS/com.551.watusischeduledmsgfix-installed-at" 2>/dev/null || true
+    fi
 
+    # Remove obsolete dylibs/plists from earlier designs.
     for base in /var/jb/Library/MobileSubstrate/DynamicLibraries /Library/MobileSubstrate/DynamicLibraries; do
-        rm -f "$base/WatusiScheduledMsgFix.dylib" 2>/dev/null || true
-        rm -f "$base/WatusiScheduledMsgFix.plist" 2>/dev/null || true
-        rm -f "$base/WatusiScheduledMsgFixCallServices.dylib" 2>/dev/null || true
-        rm -f "$base/WatusiScheduledMsgFixCallServices.plist" 2>/dev/null || true
+        rm -f \
+            "$base/WatusiScheduledMsgFix.dylib" \
+            "$base/WatusiScheduledMsgFix.plist" \
+            "$base/WatusiScheduledMsgFixCallServices.dylib" \
+            "$base/WatusiScheduledMsgFixCallServices.plist" \
+            "$base/WatusiScheduledMsgFixWA.dylib" \
+            "$base/WatusiScheduledMsgFixWA.plist" \
+            2>/dev/null || true
     done
 
     LAUNCHCTL=""
@@ -34,7 +47,6 @@ if [ "$1" = "configure" ]; then
     fi
 
     if [ -n "$LAUNCHCTL" ]; then
-        "$LAUNCHCTL" bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
         "$LAUNCHCTL" bootout system/com.551.watusischeduledmsgfix.retry 2>/dev/null || true
         RETRY_PLIST=/var/jb/Library/LaunchDaemons/com.551.watusischeduledmsgfix.retry.plist
         if [ -f "$RETRY_PLIST" ]; then
