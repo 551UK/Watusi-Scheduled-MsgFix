@@ -53,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} restores the working v1.0.10 scheduler and suppresses a second Watusi helper dispatch for the same schedule ID."
+              --notes "iOS 16 rootless build. ${TAG} fixes the rootless wake-up handoff and guards duplicate first sends while preserving delivery retries. Device testing is still required."
           fi
