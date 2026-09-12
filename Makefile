@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WatusiScheduledMsgFixSB
 
-WatusiScheduledMsgFixSB_FILES = NativeBridge.xm
+WatusiScheduledMsgFixSB_FILES = NativeBridge3.xm
 WatusiScheduledMsgFixSB_CFLAGS = -fobjc-arc
 WatusiScheduledMsgFixSB_FRAMEWORKS = Foundation
 
