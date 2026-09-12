@@ -1,9 +1,6 @@
 name: Build rootless deb
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -53,5 +50,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} removes the custom direct sender and only allows Watusi's own scheduled PushKit launch, preventing duplicate messages."
+              --notes "iOS 16 rootless build. ${TAG} restores the working direct scheduler and adds WhatsApp-side schedule-ID deduplication."
           fi
