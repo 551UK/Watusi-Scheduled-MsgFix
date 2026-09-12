@@ -2,10 +2,6 @@
 
 For iOS 16 rootless, Watusi 1.3.23 and WatusiTools 2.8.4.
 
-1.0.15 restores Watusi's original first-send routine and delays overdue processing during startup. It adds exception handling and an interrupted-attempt guard to prevent repeated launch failures.
+1.0.16 removes the direct WhatsApp injection that stopped the app opening in 1.0.15. It restores the proven SpringBoard schedule scan and routes both Watusi's native trigger and the fallback through one shared handoff so the same schedule is only posted once.
 
-New one-off schedules stay pending until sending is confirmed. Repeating schedules use Watusi's original behaviour. Missing message identity leaves a schedule pending to avoid duplicate sends.
-
-Install, let Sileo finish, then reboot and re-jailbreak. Open WhatsApp and create a fresh schedule at least a minute ahead. Do not reuse a failed 1.0.14 schedule: its sending state may be uncertain. This build still needs phone testing.
-
-If a schedule stays pending, the tweak now keeps its own recent diagnostic events in WhatsApp's Library/Caches/com.551.watusischeduledmsgfix-send.plist. No message text is logged.
+Install the deb, let Sileo finish, then userspace reboot or reboot/re-jailbreak. Open WhatsApp once and create a fresh schedule at least a minute ahead.
