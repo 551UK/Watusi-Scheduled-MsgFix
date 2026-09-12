@@ -1,9 +1,6 @@
 name: Build rootless deb
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -40,7 +37,6 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.package.outputs.version }}
@@ -53,5 +49,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} reads Watusi's real schedule store in WhatsApp's app container and forwards due schedule IDs through Watusi's own PushKit wake path."
+              --notes "iOS 16 rootless build. ${TAG} includes the direct scheduler and retries due Watusi messages instead of dropping them after one wake attempt."
           fi
