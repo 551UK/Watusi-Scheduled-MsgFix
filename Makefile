@@ -4,11 +4,11 @@ THEOS_PACKAGE_SCHEME = rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = WatusiScheduledMsgFix WatusiScheduledMsgFixCallServices
+TWEAK_NAME = WatusiScheduledMsgFixSB WatusiScheduledMsgFixCallServices
 
-WatusiScheduledMsgFix_FILES = SchedulerCore.xm
-WatusiScheduledMsgFix_CFLAGS = -fobjc-arc
-WatusiScheduledMsgFix_FRAMEWORKS = Foundation
+WatusiScheduledMsgFixSB_FILES = SpringBoard.xm
+WatusiScheduledMsgFixSB_CFLAGS = -fobjc-arc
+WatusiScheduledMsgFixSB_FRAMEWORKS = Foundation
 
 WatusiScheduledMsgFixCallServices_FILES = CallServicesFix.xm
 WatusiScheduledMsgFixCallServices_CFLAGS = -fobjc-arc
