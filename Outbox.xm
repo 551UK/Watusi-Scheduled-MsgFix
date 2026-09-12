@@ -226,6 +226,18 @@ static void Saved(NSNotification *notification) {
 }
 
 %group DurableOutbox
+%hook WSSchedulesManager
+- (void)addOrUpdateSchedule:(id)schedule {
+    Register(schedule);
+    %orig;
+}
+- (void)removeSchedule:(id)schedule {
+    NSString *key=Key(schedule);
+    Load();
+    if (key) { [ledger removeObjectForKey:key]; Save(); }
+    %orig;
+}
+%end
 %hook WSSchedule
 - (BOOL)isActive {
     NSString *key=Key(self);
