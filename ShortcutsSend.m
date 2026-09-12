@@ -25,37 +25,54 @@ static void AppendDebug(NSDictionary *fields) {
         event[@"date"] = [NSDate date];
         event[@"process"] = @"shortcuts-helper";
         [events addObject:event];
-        while (events.count > 80) [events removeObjectAtIndex:0];
-        [@{@"version":@"3.1.1",@"date":[NSDate date],@"events":events} writeToFile:kDebugPath atomically:YES];
+        while (events.count > 100) [events removeObjectAtIndex:0];
+        [@{@"version":@"3.1.2",@"date":[NSDate date],@"events":events} writeToFile:kDebugPath atomically:YES];
     }
     if (fd >= 0) { flock(fd,LOCK_UN); close(fd); }
 }
 
-@interface WSMFRunnerDelegate : NSObject
+@interface WSMFOOPDelegate : NSObject
 @property (atomic, assign) BOOL done;
 @property (atomic, assign) BOOL success;
 @property (atomic, assign) BOOL cancelled;
+@property (atomic, assign) BOOL hadResult;
 @property (atomic, strong) NSError *error;
 @property (atomic) dispatch_semaphore_t semaphore;
 @property (atomic, copy) NSString *scheduleID;
 @end
 
-@implementation WSMFRunnerDelegate
-- (void)workflowRunnerClient:(id)client didStartRunningWorkflowWithProgress:(id)progress {
-    (void)client; (void)progress;
-    AppendDebug(@{@"event":@"shortcuts-runner-callback",@"result":@"started",@"scheduleID":self.scheduleID ?: @"unknown"});
+@implementation WSMFOOPDelegate
+- (void)outOfProcessWorkflowController:(id)controller didStartFromWorkflowReference:(id)reference {
+    (void)controller; (void)reference;
+    AppendDebug(@{@"event":@"oop-runner-callback",@"result":@"started",@"scheduleID":self.scheduleID ?: @"unknown"});
 }
-- (void)finishWithError:(NSError *)error cancelled:(BOOL)cancelled {
+- (void)outOfProcessWorkflowController:(id)controller didFinishWithResult:(id)result dialogAttribution:(id)dialogAttribution {
+    (void)controller; (void)dialogAttribution;
     if (self.done) return;
+    self.hadResult = (result != nil);
+    NSError *error = nil;
+    BOOL cancelled = NO;
+    @try {
+        SEL errorSel = sel_registerName("error");
+        if (result && [result respondsToSelector:errorSel]) error = ((id(*)(id,SEL))objc_msgSend)(result,errorSel);
+        SEL cancelledSel = sel_registerName("isCancelled");
+        if (result && [result respondsToSelector:cancelledSel]) cancelled = ((BOOL(*)(id,SEL))objc_msgSend)(result,cancelledSel);
+    } @catch (NSException *e) {
+        error = [NSError errorWithDomain:@"com.551.watusischeduledmsgfix" code:12 userInfo:@{NSLocalizedDescriptionKey:e.reason ?: e.name ?: @"result-exception"}];
+    }
     self.error = error;
     self.cancelled = cancelled;
-    self.success = (!error && !cancelled);
+    self.success = (result != nil && !error && !cancelled);
     self.done = YES;
-    AppendDebug(@{@"event":@"shortcuts-runner-callback",@"result":self.success ? @"finished-success" : (cancelled ? @"cancelled" : @"finished-error"),@"scheduleID":self.scheduleID ?: @"unknown",@"errorDomain":error.domain ?: @"",@"errorCode":@(error.code)});
+    AppendDebug(@{@"event":@"oop-runner-callback",
+                  @"result":self.success ? @"finished-success" : (cancelled ? @"cancelled" : @"finished-error"),
+                  @"scheduleID":self.scheduleID ?: @"unknown",
+                  @"hadResult":@(result != nil),
+                  @"errorDomain":error.domain ?: @"",
+                  @"errorCode":@(error.code),
+                  @"errorDescription":error.localizedDescription ?: @""});
     if (self.semaphore) dispatch_semaphore_signal(self.semaphore);
 }
-- (void)workflowRunnerClient:(id)client didFinishRunningWorkflowWithError:(NSError *)error cancelled:(BOOL)cancelled { (void)client; [self finishWithError:error cancelled:cancelled]; }
-- (void)workflowRunnerClient:(id)client didFinishRunningWorkflowWithOutput:(id)output error:(NSError *)error cancelled:(BOOL)cancelled { (void)client; (void)output; [self finishWithError:error cancelled:cancelled]; }
 @end
 
 static NSString *CleanPhone(NSString *input) { return WSMFNormalizePhone(input,NULL); }
@@ -87,19 +104,36 @@ static void SetBool(id obj, const char *selectorName, BOOL value) { SEL sel = se
 static void SetULL(id obj, const char *selectorName, unsigned long long value) { SEL sel = sel_registerName(selectorName); if (obj && [obj respondsToSelector:sel]) ((void(*)(id,SEL,unsigned long long))objc_msgSend)(obj,sel,value); }
 
 static BOOL RunWhatsAppShortcut(NSString *scheduleID, NSString *phone, NSString *message, NSString **failureText) {
-    AppendDebug(@{@"event":@"shortcuts-runner",@"result":@"begin",@"scheduleID":scheduleID ?: @"unknown"});
+    AppendDebug(@{@"event":@"oop-runner",@"result":@"begin",@"scheduleID":scheduleID ?: @"unknown"});
     if (!LoadShortcutFrameworks()) { if (failureText) *failureText = @"private-framework-load-failed"; return NO; }
+
     Class descriptorClass = NSClassFromString(@"WFWorkflowDataRunDescriptor");
     Class requestClass = NSClassFromString(@"WFWorkflowRunRequest");
-    Class clientClass = NSClassFromString(@"WFWorkflowRunnerClient");
-    AppendDebug(@{@"event":@"shortcuts-classes",@"descriptor":@(descriptorClass != Nil),@"request":@(requestClass != Nil),@"client":@(clientClass != Nil)});
-    if (!descriptorClass || !requestClass || !clientClass) { if (failureText) *failureText = @"shortcuts-classes-unavailable"; return NO; }
+    Class contextClass = NSClassFromString(@"WFWorkflowRunningContext");
+    Class controllerClass = NSClassFromString(@"WFOutOfProcessWorkflowController");
+    AppendDebug(@{@"event":@"oop-classes",
+                  @"descriptor":@(descriptorClass != Nil),
+                  @"request":@(requestClass != Nil),
+                  @"context":@(contextClass != Nil),
+                  @"controller":@(controllerClass != Nil)});
+    if (!descriptorClass || !requestClass || !contextClass || !controllerClass) {
+        if (failureText) *failureText = @"oop-classes-unavailable";
+        return NO;
+    }
+
     NSError *plistError = nil;
     NSData *data = WorkflowData(phone,message,&plistError);
     if (!data) { if (failureText) *failureText = plistError.localizedDescription ?: @"workflow-data-failed"; return NO; }
+
     id descriptor = ((id(*)(id,SEL,id))objc_msgSend)(Alloc(descriptorClass),sel_registerName("initWithWorkflowData:"),data);
     id request = ((id(*)(id,SEL,id,unsigned long long))objc_msgSend)(Alloc(requestClass),sel_registerName("initWithInput:presentationMode:"),nil,0);
-    if (!descriptor || !request) { if (failureText) *failureText = @"runner-request-create-failed"; return NO; }
+    NSString *workflowID = [NSString stringWithFormat:@"com.551.watusischeduledmsgfix.%@",scheduleID.length ? scheduleID : [NSUUID UUID].UUIDString];
+    id context = ((id(*)(id,SEL,id))objc_msgSend)(Alloc(contextClass),sel_registerName("initWithWorkflowIdentifier:"),workflowID);
+    if (!descriptor || !request || !context) {
+        if (failureText) *failureText = @"oop-request-create-failed";
+        return NO;
+    }
+
     SetObject(request,"setRunSource:",@"PersonalAutomation");
     SetObject(request,"setAutomationType:",@"PersonalAutomation");
     SetObject(request,"setParentBundleIdentifier:",@"com.apple.shortcuts");
@@ -109,38 +143,86 @@ static BOOL RunWhatsAppShortcut(NSString *scheduleID, NSString *phone, NSString 
     SetBool(request,"setLogRunEvent:",NO);
     SetULL(request,"setOutputBehavior:",0);
     SetULL(request,"setPresentationMode:",0);
-    dispatch_queue_t delegateQueue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0);
-    id client = ((id(*)(id,SEL,id,id,id))objc_msgSend)(Alloc(clientClass),sel_registerName("initWithDescriptor:runRequest:delegateQueue:"),descriptor,request,delegateQueue);
-    if (!client) { if (failureText) *failureText = @"runner-client-create-failed"; return NO; }
-    WSMFRunnerDelegate *delegate = [WSMFRunnerDelegate new];
-    delegate.scheduleID = scheduleID;
-    delegate.semaphore = dispatch_semaphore_create(0);
-    SetObject(client,"setDelegate:",delegate);
+
+    SetObject(context,"setIdentifier:",workflowID);
+    SetObject(context,"setRootWorkflowIdentifier:",workflowID);
+    SetObject(context,"setWorkflowIdentifier:",workflowID);
+    SetObject(context,"setRunSource:",@"PersonalAutomation");
+    SetObject(context,"setAutomationType:",@"PersonalAutomation");
+    SetObject(context,"setOriginatingBundleIdentifier:",@"com.apple.shortcuts");
+    SetBool(context,"setAllowsDialogNotifications:",NO);
+    SetULL(context,"setOutputBehavior:",0);
+    SetULL(context,"setPresentationMode:",0);
+
+    id controller = nil;
     @try {
-        SEL start = sel_registerName("start");
-        if (![client respondsToSelector:start]) { if (failureText) *failureText = @"runner-start-unavailable"; return NO; }
-        ((void(*)(id,SEL))objc_msgSend)(client,start);
-        AppendDebug(@{@"event":@"shortcuts-runner",@"result":@"start-called",@"scheduleID":scheduleID ?: @"unknown"});
+        id allocated = Alloc(controllerClass);
+        SEL init4 = sel_registerName("initWithEnvironment:runningContext:databaseProvider:presentationMode:");
+        SEL init3 = sel_registerName("initWithEnvironment:runningContext:presentationMode:");
+        if ([allocated respondsToSelector:init4]) {
+            controller = ((id(*)(id,SEL,long long,id,id,long long))objc_msgSend)(allocated,init4,0,context,nil,0);
+            AppendDebug(@{@"event":@"oop-controller",@"result":@"init4",@"scheduleID":scheduleID ?: @"unknown"});
+        } else if ([allocated respondsToSelector:init3]) {
+            controller = ((id(*)(id,SEL,long long,id,long long))objc_msgSend)(allocated,init3,0,context,0);
+            AppendDebug(@{@"event":@"oop-controller",@"result":@"init3",@"scheduleID":scheduleID ?: @"unknown"});
+        }
     } @catch (NSException *e) {
-        if (failureText) *failureText = [NSString stringWithFormat:@"start-exception:%@",e.name ?: @"unknown"];
+        if (failureText) *failureText = [NSString stringWithFormat:@"oop-init-exception:%@",e.name ?: @"unknown"];
+        AppendDebug(@{@"event":@"oop-controller",@"result":@"init-exception",@"exception":e.name ?: @"unknown",@"reason":e.reason ?: @""});
         return NO;
     }
+    if (!controller) { if (failureText) *failureText = @"oop-controller-create-failed"; return NO; }
+
+    WSMFOOPDelegate *delegate = [WSMFOOPDelegate new];
+    delegate.scheduleID = scheduleID;
+    delegate.semaphore = dispatch_semaphore_create(0);
+    SetObject(controller,"setDelegate:",delegate);
+
+    NSError *startError = nil;
+    BOOL accepted = NO;
+    @try {
+        SEL runSel = sel_registerName("runWorkflowWithDescriptor:request:error:");
+        if (![controller respondsToSelector:runSel]) {
+            if (failureText) *failureText = @"oop-run-selector-unavailable";
+            return NO;
+        }
+        accepted = ((BOOL(*)(id,SEL,id,id,NSError **))objc_msgSend)(controller,runSel,descriptor,request,&startError);
+        AppendDebug(@{@"event":@"oop-start",
+                      @"accepted":@(accepted),
+                      @"scheduleID":scheduleID ?: @"unknown",
+                      @"errorDomain":startError.domain ?: @"",
+                      @"errorCode":@(startError.code),
+                      @"errorDescription":startError.localizedDescription ?: @""});
+    } @catch (NSException *e) {
+        if (failureText) *failureText = [NSString stringWithFormat:@"oop-start-exception:%@",e.name ?: @"unknown"];
+        AppendDebug(@{@"event":@"oop-start",@"accepted":@NO,@"exception":e.name ?: @"unknown",@"reason":e.reason ?: @""});
+        return NO;
+    }
+    if (!accepted) {
+        if (failureText) {
+            if (startError) *failureText = [NSString stringWithFormat:@"%@:%ld",startError.domain ?: @"error",(long)startError.code];
+            else *failureText = @"oop-start-rejected";
+        }
+        return NO;
+    }
+
     long waitResult = dispatch_semaphore_wait(delegate.semaphore,dispatch_time(DISPATCH_TIME_NOW,45*NSEC_PER_SEC));
     if (waitResult != 0 || !delegate.done) {
         SEL stop = sel_registerName("stop");
-        if ([client respondsToSelector:stop]) ((void(*)(id,SEL))objc_msgSend)(client,stop);
-        if (failureText) *failureText = @"runner-timeout";
-        AppendDebug(@{@"event":@"shortcuts-runner",@"result":@"timeout",@"scheduleID":scheduleID ?: @"unknown"});
+        if ([controller respondsToSelector:stop]) ((void(*)(id,SEL))objc_msgSend)(controller,stop);
+        if (failureText) *failureText = @"oop-runner-timeout";
+        AppendDebug(@{@"event":@"oop-runner",@"result":@"timeout",@"scheduleID":scheduleID ?: @"unknown"});
         return NO;
     }
     if (!delegate.success) {
         if (failureText) {
             if (delegate.error) *failureText = [NSString stringWithFormat:@"%@:%ld",delegate.error.domain ?: @"error",(long)delegate.error.code];
-            else *failureText = delegate.cancelled ? @"runner-cancelled" : @"runner-failed";
+            else *failureText = delegate.cancelled ? @"oop-runner-cancelled" : (delegate.hadResult ? @"oop-runner-failed" : @"oop-runner-no-result");
         }
         return NO;
     }
-    AppendDebug(@{@"event":@"shortcuts-send-success",@"scheduleID":scheduleID ?: @"unknown"});
+
+    AppendDebug(@{@"event":@"shortcuts-send-success",@"scheduleID":scheduleID ?: @"unknown",@"route":@"background-runner-xpc"});
     return YES;
 }
 
@@ -182,7 +264,7 @@ static void MarkSent(NSString *occurrenceKey) {
         if (!oldestKey) break;
         [sent removeObjectForKey:oldestKey];
     }
-    root[@"version"] = @"3.1.1";
+    root[@"version"] = @"3.1.2";
     root[@"date"] = [NSDate date];
     [root writeToFile:kSentPath atomically:YES];
 }
@@ -228,7 +310,7 @@ static NSUInteger ScanDueSchedulesForBundle(NSString *bundle) {
         jobs[occurrenceKey] = @{@"scheduleID":sid,@"occurrenceKey":occurrenceKey,@"phone":phone,@"message":message,@"bundleID":bundle,@"scheduleDate":date,@"repeat":@"None",@"created":[NSDate date],@"state":@"pending",@"attempts":@0,@"source":@"store-scanner"};
         queued++;
     }
-    pendingRoot[@"version"] = @"3.1.1";
+    pendingRoot[@"version"] = @"3.1.2";
     pendingRoot[@"date"] = [NSDate date];
     [pendingRoot writeToFile:kPendingPath atomically:YES];
     AppendDebug(@{@"event":@"schedule-scan",@"bundleID":bundle,@"result":@"ok",@"storePath":storePath ?: @"",@"scheduleCount":@(schedules.count),@"dueSeen":@(dueSeen),@"queued":@(queued)});
@@ -285,6 +367,7 @@ static BOOL DrainPending(void) {
             jobs[occurrenceKey] = job;
             AppendDebug(@{@"event":@"shortcuts-send-failed",@"scheduleID":scheduleID,@"occurrenceKey":occurrenceKey,@"error":failure ?: @"unknown"});
         }
+        root[@"version"] = @"3.1.2";
         root[@"date"] = [NSDate date];
         [root writeToFile:kPendingPath atomically:YES];
     }
@@ -296,7 +379,7 @@ static BOOL DrainPending(void) {
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         (void)argc; (void)argv;
-        AppendDebug(@{@"event":@"shortcuts-helper-start",@"pid":@((int)getpid()),@"uid":@((int)getuid()),@"euid":@((int)geteuid())});
+        AppendDebug(@{@"event":@"shortcuts-helper-start",@"pid":@((int)getpid()),@"uid":@((int)getuid()),@"euid":@((int)geteuid()),@"route":@"background-runner-xpc"});
         DrainPending();
         AppendDebug(@{@"event":@"shortcuts-helper-exit"});
     }
