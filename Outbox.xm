@@ -5,12 +5,19 @@
 #import <objc/runtime.h>
 #import "DeliveryPolicy.h"
 
+@protocol WSMFSessionFactory
+- (id)newOrExistingChatSessionForJID:(id)jid;
+@end
+
 static NSMutableDictionary *ledger;
 static NSMutableDictionary *liveMessages;
 static NSMutableDictionary *lastRetries;
 static BOOL hooksInstalled;
 static BOOL ticking;
 static unsigned installAttempts;
+static NSDate *readyAfter;
+static NSString * const nativeContextKey=@"com.551.watusi.native-send-context";
+static void Event(NSString *event);
 static UIBackgroundTaskIdentifier backgroundTask = UIBackgroundTaskInvalid;
 
 static id Get(id o, NSString *name) {
@@ -39,8 +46,14 @@ static BOOL Save(void) {
     return ok;
 }
 static void Event(NSString *event) {
-    [@{@"version":@"1.0.14", @"date":[NSDate date], @"event":event}
-        writeToFile:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/com.551.watusischeduledmsgfix-send.plist"] atomically:YES];
+    @synchronized ([NSProcessInfo processInfo]) {
+        NSString *path=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/com.551.watusischeduledmsgfix-send.plist"];
+        NSDictionary *old=[NSDictionary dictionaryWithContentsOfFile:path];
+        NSMutableArray *events=[old[@"events"] isKindOfClass:[NSArray class]] ? [old[@"events"] mutableCopy] : [NSMutableArray array];
+        [events addObject:@{@"date":[NSDate date],@"event":event}];
+        while (events.count>40) [events removeObjectAtIndex:0];
+        [@{@"version":@"1.0.15",@"events":events} writeToFile:path atomically:YES];
+    }
 }
 static NSString *Key(id s) {
     id uid=Get(s,@"uniqueID"), date=Get(s,@"date");
@@ -62,7 +75,7 @@ static BOOL BoolCall(id object, NSString *name, id arg) {
 }
 static id Session(id jid) {
     id wa=Shared(@"FRWhatsApp"); SEL sel=NSSelectorFromString(@"newOrExistingChatSessionForJID:");
-    return [wa respondsToSelector:sel] ? ((id(*)(id,SEL,id))objc_msgSend)(wa,sel,jid) : nil;
+    return [wa respondsToSelector:sel] ? [(id<WSMFSessionFactory>)wa newOrExistingChatSessionForJID:jid] : nil;
 }
 static void KeepAlive(void) {
     if (backgroundTask != UIBackgroundTaskInvalid) return;
@@ -101,67 +114,86 @@ static id ResolveMessage(NSString *key, NSString *jid, NSDictionary *state, id s
     NSManagedObjectID *oid=[psc managedObjectIDForURIRepresentation:[NSURL URLWithString:uri]];
     return oid ? [ctx existingObjectWithID:oid error:nil] : nil;
 }
+static NSString *AttemptPath(void) {
+    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/com.551.watusischeduledmsgfix-attempt.plist"];
+}
+static void BeginAttempt(NSString *key, NSString *phase) {
+    [@{@"key":key,@"phase":phase,@"date":[NSDate date],@"version":@"1.0.15"}
+        writeToFile:AttemptPath() atomically:YES];
+}
+static void EndAttempt(void) { [[NSFileManager defaultManager] removeItemAtPath:AttemptPath() error:nil]; }
+static void RecoverInterruptedAttempt(void) {
+    NSDictionary *previous=[NSDictionary dictionaryWithContentsOfFile:AttemptPath()];
+    NSString *key=previous[@"key"];
+    if (key && ledger[key]) {
+        ledger[key][@"blockedByTermination"]=@YES;
+        ledger[key][@"interruptedPhase"]=previous[@"phase"] ?: @"unknown";
+        Save(); Event(@"interrupted-attempt-kept-pending-without-relaunch-loop");
+    }
+    EndAttempt();
+}
 static void Process(id schedule, NSString *key, NSMutableDictionary *row) {
-    if ([row[@"status"] isEqual:@"sent"] || [row[@"date"] timeIntervalSinceNow]>0) return;
-    id wa=Shared(@"FRWhatsApp"), handler=Shared(@"WSScheduleHandler");
-    id storage=Get(wa,@"chatStorage");
-    if (!storage || !handler) return;
+    if ([row[@"status"] isEqual:@"sent"] || [row[@"date"] timeIntervalSinceNow]>0 ||
+        [row[@"blockedByTermination"] boolValue] || [readyAfter timeIntervalSinceNow]>0) return;
+    id handler=nil;
+    BeginAttempt(key,@"resolve-native-handler");
+    @try { handler=Shared(@"WSScheduleHandler"); }
+    @catch (NSException *e) { row[@"blockedByTermination"]=@YES; Save(); Event([@"handler-exception:" stringByAppendingString:e.name]); }
+    @finally { EndAttempt(); }
+    if (!handler) return;
+    BOOL allReady=YES;
+    for (NSDictionary *state in [row[@"recipients"] allValues])
+        if (![state[@"state"] isEqual:@"ready"]) allReady=NO;
+    if (allReady) {
+        // Use the same entry point as a normal Watusi PushKit notification.
+        // Do not create sessions or call the text sender from a startup timer.
+        SEL native=NSSelectorFromString(@"processScheduleFromPushKitNotificationWithID:");
+        if ([handler respondsToSelector:native]) {
+            BeginAttempt(key,@"native-schedule-entry");
+            @try { ((void(*)(id,SEL,id))objc_msgSend)(handler,native,Get(schedule,@"uniqueID")); }
+            @catch (NSException *e) {
+                row[@"blockedByTermination"]=@YES; Save(); Event([@"native-exception:" stringByAppendingString:e.name]);
+            }
+            @finally { EndAttempt(); }
+        }
+        return;
+    }
     BOOL complete=YES;
     for (NSString *jid in row[@"recipients"]) {
         NSMutableDictionary *state=row[@"recipients"][jid];
         if ([state[@"state"] isEqual:@"sent"]) continue;
-        id session=Session(jid); if (!session) { complete=NO; continue; }
-        id message=ResolveMessage(key,jid,state,session);
-        BOOL sent=message && BoolCall(handler,@"messageSent:",message);
-        WSMFAction action=WSMFDeliveryAction(![state[@"state"] isEqual:@"ready"], message!=nil, sent);
-        if (action==WSMFConfirm) {
-            state[@"state"]=@"sent";
-            Save();
-            continue;
-        }
         complete=NO;
-        KeepAlive();
-        NSString *token=[key stringByAppendingFormat:@"|%@",jid];
-        if (action==WSMFRetry) {
-            NSString *uri=URI(message);
-            if (uri && !state[@"uri"]) { state[@"uri"]=uri; Save(); }
-            NSDate *last=lastRetries[token];
-            if (last && -[last timeIntervalSinceNow]<30) continue;
-            SEL retry=NSSelectorFromString(@"retrySendingMessage:");
-            if ([storage respondsToSelector:retry]) {
-                lastRetries[token]=[NSDate date];
-                ((void(*)(id,SEL,id))objc_msgSend)(storage,retry,message);
-            }
-        } else if (action==WSMFCreate) {
-            SEL send=NSSelectorFromString(@"sendMessageWithText:inChatSession:");
-            NSString *sessionURI=URI(session);
-            if (![wa respondsToSelector:send] || !sessionURI) continue;
-            // Wait for the application's sending backend to be ready.
-            NSArray *selectors=@[@"sendMessageWithText:attachments:messageOrigin:toChatSessions:hasTextFromURL:",
-                @"sendMessageWithText:metadata:messageOrigin:toChatSessions:hasTextFromURL:",
-                @"sendMessageWithText:metadata:toChatSessions:hasTextFromURL:",
-                @"sendMessageWithText:metadata:multicast:replyingToItem:inChatSession:",
-                @"sendMessageWithText:metadata:replyingToItem:inChatSession:"];
-            BOOL backendReady=NO;
-            for (NSString *name in selectors)
-                if ([storage respondsToSelector:NSSelectorFromString(name)] ||
-                    [Get(wa,@"messageSender") respondsToSelector:NSSelectorFromString(name)]) backendReady=YES;
-            if (!backendReady) continue;
-            // Serialize identity capture for scheduled sends to the same chat.
-            BOOL busy=NO;
-            for (NSDictionary *otherRow in ledger.allValues)
-                for (NSDictionary *other in [otherRow[@"recipients"] allValues])
-                    if ([other[@"state"] isEqual:@"submitted"] && !other[@"uri"] &&
-                        [other[@"sessionURI"] isEqual:sessionURI]) busy=YES;
-            if (busy) continue;
-            // Persist intent BEFORE calling an asynchronous sending API.
-            state[@"state"]=@"submitted";
-            state[@"sessionURI"]=sessionURI;
-            state[@"submittedAt"]=[NSDate date];
-            if (!Save()) { state[@"state"]=@"ready"; continue; }
-            ((void(*)(id,SEL,id,id))objc_msgSend)(wa,send,Get(schedule,@"message"),session);
-            Event(@"message-submitted-awaiting-identity-and-status");
-        }
+        // Unknown identity is not permission to create another message.
+        if (!state[@"uri"]) continue;
+        BeginAttempt(key,@"resolve-existing-message");
+        @try {
+            id session=Session(jid);
+            if (![session isKindOfClass:[NSManagedObject class]]) continue;
+            NSManagedObjectContext *ctx=[session managedObjectContext];
+            [ctx performBlockAndWait:^{
+                @try {
+                    id message=ResolveMessage(key,jid,state,session);
+                    if (!message) return;
+                    WSMFAction action=WSMFDeliveryAction(1, message!=nil, BoolCall(handler,@"messageSent:",message));
+                    if (action==WSMFConfirm) {
+                        state[@"state"]=@"sent";
+                        return;
+                    }
+                    NSString *token=[key stringByAppendingFormat:@"|%@",jid];
+                    NSDate *last=lastRetries[token];
+                    if (last && -[last timeIntervalSinceNow]<30) return;
+                    id storage=Get(Shared(@"FRWhatsApp"),@"chatStorage");
+                    SEL retry=NSSelectorFromString(@"retrySendingMessage:");
+                    if ([storage respondsToSelector:retry]) {
+                        lastRetries[token]=[NSDate date];
+                        ((void(*)(id,SEL,id))objc_msgSend)(storage,retry,message);
+                    }
+                } @catch (NSException *e) { Event([@"message-context-exception:" stringByAppendingString:e.name]); }
+            }];
+            Save();
+        } @catch (NSException *e) {
+            row[@"blockedByTermination"]=@YES; Save(); Event([@"resolve-exception:" stringByAppendingString:e.name]);
+        } @finally { EndAttempt(); }
     }
     if (complete) { row[@"status"]=@"sent"; Save(); Event(@"all-recipients-confirmed-by-watusi-send-status"); }
 }
@@ -180,12 +212,13 @@ static void Tick(void) {
         }
         // Do not erase durable state while WhatsApp's manager is loading.
         // Explicit save/delete hooks own lifecycle cleanup.
-    } @finally { ticking=NO; }
+    } @catch (NSException *e) { Event([@"tick-exception:" stringByAppendingString:e.name]); }
+    @finally { ticking=NO; }
 }
 // Capture newly inserted outgoing objects, not a chat's arbitrary last message.
 // The observer runs on the saving context's own queue; only immutable identity
 // data cross to the main queue. Capture requires the exact session and text.
-static void Saved(NSNotification *notification) {
+static void SavedUnchecked(NSNotification *notification) {
     NSMutableArray *candidates=[NSMutableArray array];
     for (NSManagedObject *object in notification.userInfo[NSInsertedObjectsKey]) {
         NSString *uri=URI(object); if (!uri) continue;
@@ -218,6 +251,10 @@ static void Saved(NSNotification *notification) {
         }
         Tick();
     });
+}
+static void Saved(NSNotification *notification) {
+    @try { SavedUnchecked(notification); }
+    @catch (NSException *e) { Event([@"save-observer-exception:" stringByAppendingString:e.name]); }
 }
 
 %group DurableOutbox
@@ -253,12 +290,61 @@ static void Saved(NSNotification *notification) {
 - (void)sendSchedule:(id)schedule retryJIDs:(id)jids timesSent:(NSInteger)times completion:(id)completion {
     NSString *key=Key(schedule);
     Load();
-    if (key && ledger[key]) {
-        // Native completion only releases its background task. Our ledger owns
-        // pending/sent state, and our retry path uses the captured message ID.
-        dispatch_async(dispatch_get_main_queue(), ^{ Tick(); if (completion) ((void(^)(void))completion)(); });
+    NSMutableDictionary *row=key ? ledger[key] : nil;
+    if (!row) {
+        %orig;
         return;
     }
+    BOOL allowed=WSMFCanStart(times==0, ![row[@"blockedByTermination"] boolValue], [readyAfter timeIntervalSinceNow]<=0);
+    for (NSDictionary *state in [row[@"recipients"] allValues])
+        if (![state[@"state"] isEqual:@"ready"]) allowed=NO;
+    if (!allowed) {
+        if (completion) ((void(^)(void))completion)();
+        return;
+    }
+    for (NSMutableDictionary *state in [row[@"recipients"] allValues]) {
+        state[@"state"]=@"submitted";
+        state[@"submittedAt"]=[NSDate date];
+    }
+    if (!Save()) {
+        for (NSMutableDictionary *state in [row[@"recipients"] allValues]) state[@"state"]=@"ready";
+        if (completion) ((void(^)(void))completion)();
+        return;
+    }
+    NSMutableDictionary *thread=[NSThread currentThread].threadDictionary;
+    id previous=thread[nativeContextKey];
+    thread[nativeContextKey]=[@{@"key":key,@"recipients":Get(schedule,@"recipients") ?: @[],@"index":@0} mutableCopy];
+    KeepAlive();
+    BeginAttempt(key,@"original-watusi-first-send");
+    @try {
+        %orig;
+    } @catch (NSException *e) {
+        row[@"blockedByTermination"]=@YES; Save(); Event([@"original-send-exception:" stringByAppendingString:e.name]);
+        if (completion) ((void(^)(void))completion)();
+    } @finally {
+        if (previous) thread[nativeContextKey]=previous; else [thread removeObjectForKey:nativeContextKey];
+        EndAttempt();
+    }
+}
+%end
+
+%hook FRWhatsApp
+- (void)sendMessageWithText:(id)text inChatSession:(id)session {
+    // Observe the session Watusi already supplied; never create it ourselves
+    // during the first send. The native routine enumerates recipients in order.
+    @try {
+        NSMutableDictionary *context=[NSThread currentThread].threadDictionary[nativeContextKey];
+        NSUInteger index=[context[@"index"] unsignedIntegerValue];
+        NSArray *recipients=context[@"recipients"];
+        if (context && index<recipients.count) {
+            context[@"index"]=@(index+1);
+            NSString *uri=URI(session);
+            if (uri) {
+                ledger[context[@"key"]][@"recipients"][recipients[index]][@"sessionURI"]=uri;
+                Save();
+            }
+        }
+    } @catch (NSException *e) { Event([@"session-observer-exception:" stringByAppendingString:e.name]); }
     %orig;
 }
 %end
@@ -270,6 +356,8 @@ static void Install(void) {
     char type[16]={0}; if (m) method_getArgumentType(m,4,type,sizeof(type));
     if (m && method_getNumberOfArguments(m)==6 && type[0]=='q' && NSClassFromString(@"WSSchedule")) {
         Load();
+        readyAfter=[NSDate dateWithTimeIntervalSinceNow:15];
+        RecoverInterruptedAttempt();
         %init(DurableOutbox);
         hooksInstalled=YES;
         [[NSNotificationCenter defaultCenter] addObserverForName:NSManagedObjectContextDidSaveNotification object:nil queue:nil usingBlock:^(NSNotification *n){ Saved(n); }];

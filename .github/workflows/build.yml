@@ -56,5 +56,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} adds a persistent pending outbox for new one-off schedules. Retries use the saved outgoing message identity. Device testing is still required."
+              --notes "iOS 16 rootless build. ${TAG} restores Watusi native first sending and adds startup protection for overdue schedules. Pending-state support remains. Device testing is required."
           fi

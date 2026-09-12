@@ -15,3 +15,15 @@ Before the first send, submission intent is persisted. A Core Data save observer
 Limitations: runtime compatibility of WhatsApp's managed message objects and chatSession relation has not been verified on the device. A missing/ambiguous identity or crash between submission and identity capture leaves the occurrence pending without blindly recreating it. Identical manually sent text during the same insertion interval can make matching ambiguous; this is not an exactly-once delivery guarantee. Existing overdue schedules are not imported, to avoid replaying already delivered messages. Repeating schedules remain on Watusi's native implementation.
 
 Regression tests execute the shared delivery decision function. CI compiles all three rootless injection components. Required device validation: fresh one-off schedule, locked/app-closed delivery, offline over five minutes then reconnect, multiple recipients, respring while queued, deletion, identical-text concurrent messages, and normal foreground sending.
+
+## 1.0.15 termination repair
+
+The user reports normal startup before a schedule is due, then termination on subsequent launches. Without a device termination report, the precise cause is not confirmed.
+
+Removed the custom first-send implementation from Process. A due, ready occurrence now enters processScheduleFromPushKitNotificationWithID: and calls the original sendSchedule implementation once. The session observer records the session passed by Watusi itself. Submission intent still prevents another initial creation. Startup processing waits 15 seconds, known-message operations use the Core Data context queue, and exception names are recorded in a bounded diagnostic history.
+
+A persisted in-progress marker guards synchronous native and message-resolution operations. If the next process finds an interrupted attempt, that occurrence remains pending and blocked rather than immediately repeating the same operation. An asynchronous process exit after submission leaves submitted state intact; it never authorizes recreating the message. Failed 1.0.14 occurrences are not reset automatically.
+
+The FRWhatsApp newOrExistingChatSessionForJID: binary returns an owned object (0xea08 through 0xeb58). Calls now use an Objective-C method declaration so ARC applies the new-method ownership convention, avoiding a leak in the earlier unannotated function-pointer call.
+
+Host tests cover startup deferral, blocked-attempt rejection and first-send/retry decisions. Build validation cannot establish device stability or confirm actual delivery.

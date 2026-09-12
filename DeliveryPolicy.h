@@ -10,4 +10,7 @@ static inline WSMFAction WSMFDeliveryAction(int submitted, int knownMessage, int
     if (submitted) return WSMFWait;
     return WSMFCreate;
 }
+static inline int WSMFCanStart(int initialAttempt, int notBlocked, int startupReady) {
+    return initialAttempt && notBlocked && startupReady;
+}
 #endif

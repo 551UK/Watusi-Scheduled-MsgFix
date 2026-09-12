@@ -3,7 +3,7 @@
 #import <notify.h>
 #import <unistd.h>
 
-static NSString * const kVersion = @"1.0.14";
+static NSString * const kVersion = @"1.0.15";
 static NSString * const kWA = @"net.whatsapp.WhatsApp";
 static NSString * const kWAB = @"net.whatsapp.WhatsAppSMB";
 static NSString * const kScheduleIDKey = @"WatusiMessageScheduleID";
@@ -132,7 +132,7 @@ static void ScanSchedules(void) {
         if (![rows isKindOfClass:[NSDictionary class]]) continue;
         for (NSString *key in rows) {
             NSDictionary *row=rows[key];
-            if (![row isKindOfClass:[NSDictionary class]] || ![row[@"status"] isEqual:@"pending"] ||
+            if (![row isKindOfClass:[NSDictionary class]] || ![row[@"status"] isEqual:@"pending"] || [row[@"blockedByTermination"] boolValue] ||
                 ![row[@"date"] isKindOfClass:[NSDate class]] || [row[@"date"] compare:now]==NSOrderedDescending || !row[@"id"]) continue;
             NSString *wakeKey=[store[@"bundleID"] stringByAppendingFormat:@"|%@",key];
             NSDate *last=gLastWake[wakeKey];
