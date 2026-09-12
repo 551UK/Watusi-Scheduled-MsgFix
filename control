@@ -1,8 +1,8 @@
 Package: com.551.watusischeduledmsgfix
 Name: Watusi Scheduled Message Fix
-Version: 1.0.17
+Version: 2.0.0
 Architecture: iphoneos-arm64
-Description: Fixes Watusi scheduled messages on iOS 16 when WhatsApp is closed or the device is locked.
+Description: Bridges iOS 16 scheduled WhatsApp notifications back into Watusi's native scheduler when WhatsApp is closed or locked.
 Maintainer: 551
 Author: 551
 Section: Tweaks
