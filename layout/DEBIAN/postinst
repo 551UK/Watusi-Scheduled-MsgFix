@@ -1,7 +1,6 @@
 #!/bin/sh
 
 if [ "$1" = "configure" ]; then
-    # Remove every state/debug file created by the old scanner/outbox experiments.
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist 2>/dev/null || true
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-native-debug.plist 2>/dev/null || true
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist 2>/dev/null || true
@@ -13,21 +12,18 @@ if [ "$1" = "configure" ]; then
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-delivery-state.plist 2>/dev/null || true
     rm -f /var/mobile/Library/Caches/com.551.watusischeduledmsgfix-send.plist 2>/dev/null || true
 
-    # Clear a stale Watusi handoff left by a failed previous attempt.
     rm -f /var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist 2>/dev/null || true
     rm -f /var/jb/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist 2>/dev/null || true
 
-    # Remove only obsolete tweak binaries. The 2.0.0 SB and CallServices dylibs
-    # intentionally use their package target names and must remain installed.
     for base in /var/jb/Library/MobileSubstrate/DynamicLibraries /Library/MobileSubstrate/DynamicLibraries; do
         rm -f "$base/WatusiScheduledMsgFix.dylib" 2>/dev/null || true
         rm -f "$base/WatusiScheduledMsgFix.plist" 2>/dev/null || true
         rm -f "$base/WatusiScheduledMsgFixWA.dylib" 2>/dev/null || true
         rm -f "$base/WatusiScheduledMsgFixWA.plist" 2>/dev/null || true
+        rm -f "$base/WatusiScheduledMsgFixCallServices.dylib" 2>/dev/null || true
+        rm -f "$base/WatusiScheduledMsgFixCallServices.plist" 2>/dev/null || true
     done
 
-    # Clean up the old v1.0.3 LaunchDaemon if it is still present.
-    # Never respring or kill SpringBoard here: postinst runs inside dpkg.
     if [ -x /bin/launchctl ]; then
         /bin/launchctl bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
     elif [ -x /var/jb/bin/launchctl ]; then
