@@ -2,7 +2,7 @@ name: Build rootless deb
 
 on:
   push:
-    branches: [ __install_fix_staging__ ]
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
