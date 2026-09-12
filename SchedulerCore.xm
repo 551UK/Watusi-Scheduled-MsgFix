@@ -3,7 +3,7 @@
 #import <notify.h>
 #import <unistd.h>
 
-static NSString * const kVersion = @"1.0.13";
+static NSString * const kVersion = @"1.0.14";
 static NSString * const kWA = @"net.whatsapp.WhatsApp";
 static NSString * const kWAB = @"net.whatsapp.WhatsAppSMB";
 static NSString * const kScheduleIDKey = @"WatusiMessageScheduleID";
@@ -14,14 +14,14 @@ static NSString * const kDebugPath = @"/var/mobile/Library/Preferences/com.551.w
 static NSString * const kGateDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-gate.plist";
 static NSString * const kDispatchedPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist";
 static const char *kPushNotification = "com.fouadraheb.watusi.pushkit-notification";
-static const NSTimeInterval kMaxRecoveryAge = 86400.0;
+static const NSTimeInterval kMaxRecoveryAge = 60.0;
 
 static dispatch_queue_t gQueue;
 static dispatch_source_t gTimer;
 static NSMutableDictionary<NSString *, NSDate *> *gDispatched;
 static NSUInteger gTick = 0;
 static BOOL gGateInstalled = NO;
-static __thread BOOL gDirectHelperCall = NO;
+static NSMutableDictionary *gRecentBridges;
 
 static BOOL IsWA(NSString *bundleID) {
     return [bundleID isKindOfClass:[NSString class]] &&
@@ -136,38 +136,50 @@ static NSArray *ReadSchedules(NSString *path, NSString **rootTypeOut) {
     return @[];
 }
 
+// Both native notifications and the polling fallback use this same handoff.
+// A void helper return is not evidence that its file was written.
 static BOOL ManualBridge(id scheduleID, NSString *bundleID, NSString **resultOut) {
-    NSDictionary *info = @{@"userInfo":@{kScheduleIDKey:scheduleID},@"bundleID":bundleID};
-    if (![info writeToFile:kRunningSchedulePath atomically:YES]) {
-        if (resultOut) *resultOut = @"manual-bridge-write-failed";
-        return NO;
+    @synchronized ([NSProcessInfo processInfo]) {
+        if (!gRecentBridges) gRecentBridges = [NSMutableDictionary dictionary];
+        NSDate *now = [NSDate date];
+        for (NSString *key in [gRecentBridges.allKeys copy])
+            if ([now timeIntervalSinceDate:gRecentBridges[key]] > 10.0)
+                [gRecentBridges removeObjectForKey:key];
+        NSString *key = [NSString stringWithFormat:@"%@|%@", bundleID, scheduleID];
+        if (gRecentBridges[key]) {
+            if (resultOut) *resultOut = @"handoff-already-posted";
+            return YES;
+        }
+        // Watusi consumes one file. Never overwrite a different pending schedule.
+        if ([[NSFileManager defaultManager] fileExistsAtPath:kRunningSchedulePath]) {
+            if (resultOut) *resultOut = @"handoff-busy-waiting-for-consumer";
+            return NO;
+        }
+        NSDictionary *info = @{@"userInfo":@{kScheduleIDKey:scheduleID},@"bundleID":bundleID};
+        NSData *data = [NSPropertyListSerialization dataWithPropertyList:info
+            format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+        if (!data || ![data writeToFile:kRunningSchedulePath
+                options:(NSDataWritingAtomic | NSDataWritingFileProtectionNone) error:nil]) {
+            if (resultOut) *resultOut = @"handoff-write-failed";
+            return NO;
+        }
+        [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions:@0600}
+            ofItemAtPath:kRunningSchedulePath error:nil];
+        uint32_t status = notify_post(kPushNotification);
+        if (status != NOTIFY_STATUS_OK) {
+            [[NSFileManager defaultManager] removeItemAtPath:kRunningSchedulePath error:nil];
+            if (resultOut) *resultOut = @"handoff-notify-failed";
+            return NO;
+        }
+        gRecentBridges[key] = now;
+        if (resultOut) *resultOut = @"handoff-posted-delivery-unconfirmed";
+        return YES;
     }
-    uint32_t status = notify_post(kPushNotification);
-    if (status != NOTIFY_STATUS_OK) {
-        if (resultOut) *resultOut = [NSString stringWithFormat:@"manual-notify-failed-%u",status];
-        return NO;
-    }
-    if (resultOut) *resultOut = @"manual-watusi-pushkit-bridge-posted";
-    return YES;
 }
 
 static BOOL FireSchedule(id scheduleID, NSString *bundleID, NSString **resultOut) {
     if (!scheduleID || !IsWA(bundleID)) return NO;
-
-    Class helper = NSClassFromString(@"WSSchedulerHelper");
-    SEL sel = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
-    if (helper && [helper respondsToSelector:sel]) {
-        @try {
-            gDirectHelperCall = YES;
-            ((void (*)(id,SEL,id,id))objc_msgSend)(helper,sel,scheduleID,bundleID);
-            if (resultOut) *resultOut = @"called-watusi-sendPush-helper";
-            return YES;
-        } @catch (__unused NSException *e) {
-        } @finally {
-            gDirectHelperCall = NO;
-        }
-    }
-    return ManualBridge(scheduleID,bundleID,resultOut);
+    return ManualBridge(scheduleID, bundleID, resultOut);
 }
 
 static void ScanSchedules(NSString *reason) {
@@ -229,7 +241,7 @@ static void ScanSchedules(NSString *reason) {
 
 static void StartScheduler(void) {
     LoadDispatched();
-    gQueue = dispatch_queue_create("com.551.watusischeduledmsgfix.springboard",DISPATCH_QUEUE_SERIAL);
+    gQueue = dispatch_get_main_queue();
     gTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,gQueue);
     dispatch_source_set_timer(gTimer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,100*NSEC_PER_MSEC);
     dispatch_source_set_event_handler(gTimer,^{ ScanSchedules(@"timer-scan"); });
@@ -239,13 +251,12 @@ static void StartScheduler(void) {
 
 %group WSSMFHelperGate
 %hook WSSchedulerHelper
-+ (void)sendPushNotificationForScheduleID:(id)scheduleID bundleIdentifier:(NSString *)bundleID {
-    if (!gDirectHelperCall) {
-        WriteGateDebug(scheduleID,bundleID,@"suppressed-watusi-native-duplicate");
-        return;
-    }
-    WriteGateDebug(scheduleID,bundleID,@"allowed-direct-scheduler");
-    %orig;
++ (void)sendCallKitNotificationWithUserInfo:(id)userInfo bundleIdentifier:(NSString *)bundleID {
+    id scheduleID = [userInfo isKindOfClass:[NSDictionary class]] ? userInfo[kScheduleIDKey] : nil;
+    if (!IsWA(bundleID) || !scheduleID) { %orig; return; }
+    NSString *result = nil;
+    ManualBridge(scheduleID, bundleID, &result);
+    WriteGateDebug(scheduleID, bundleID, result);
 }
 %end
 %end
@@ -253,11 +264,11 @@ static void StartScheduler(void) {
 static void TryInstallHelperGate(void) {
     if (gGateInstalled) return;
     Class helper = NSClassFromString(@"WSSchedulerHelper");
-    SEL sel = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
+    SEL sel = NSSelectorFromString(@"sendCallKitNotificationWithUserInfo:bundleIdentifier:");
     if (helper && [helper respondsToSelector:sel]) {
         %init(WSSMFHelperGate);
         gGateInstalled = YES;
-        WriteDebug(@{@"event":@"helper-gate",@"result":@"installed-direct-only"});
+        WriteDebug(@{@"event":@"helper-gate",@"result":@"installed-shared-handoff"});
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,500*NSEC_PER_MSEC),dispatch_get_main_queue(),^{ TryInstallHelperGate(); });
