@@ -1,7 +1,5 @@
 # Watusi Scheduled Message Fix
 
-For iOS 16 rootless with Watusi 1.3.23.
+Fixes Watusi scheduled messages on iOS 16 rootless.
 
-3.0.0 is a fresh rewrite. It repairs Watusi's old SpringBoard scheduled-notification trigger on iOS 16 and then leaves Watusi's own wake, send, retry and delivery logic alone.
-
-No custom sender, no schedule polling, no outbox, no callservicesd override and no WhatsApp injection.
+Watusi stays as the scheduler. Due direct messages are sent through iOS Shortcuts' WhatsApp background messaging path, with pending sends kept and retried instead of being dropped after the scheduled minute.
