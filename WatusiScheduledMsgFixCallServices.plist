@@ -6,7 +6,11 @@
     <dict>
         <key>Bundles</key>
         <array>
-            <string>com.551.disabled</string>
+            <string>com.apple.calls.telephonyutilities</string>
+        </array>
+        <key>Executables</key>
+        <array>
+            <string>callservicesd</string>
         </array>
     </dict>
 </dict>
