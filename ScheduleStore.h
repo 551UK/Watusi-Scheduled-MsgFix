@@ -223,10 +223,11 @@ static NSString *WSMFSchedulePhone(NSDictionary *schedule, BOOL *groupFound) {
     return WSMFFindPhone(recipients,0,groupFound);
 }
 
-static uint64_t WSMFFNV1a64(const char *bytes, size_t length) {
+static uint64_t WSMFFNV1a64(const void *rawBytes, size_t length) {
+    const unsigned char *bytes = (const unsigned char *)rawBytes;
     uint64_t hash = 1469598103934665603ULL;
     for (size_t i = 0; i < length; i++) {
-        hash ^= (unsigned char)bytes[i];
+        hash ^= bytes[i];
         hash *= 1099511628211ULL;
     }
     return hash;
