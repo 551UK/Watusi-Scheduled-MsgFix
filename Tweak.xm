@@ -167,7 +167,7 @@ static void WSSMFScanSchedules(NSString *reason) {
             if (!key.length) continue;
             [activeKeys addObject:key];
             if (lateness > WSSMFMaxRecoveryAge) {
-                lastEvent=@[@{}].firstObject.mutableCopy;
+                lastEvent = [NSMutableDictionary dictionary];
                 lastEvent[@"lastResult"]=@"overdue-beyond-24h-not-sent";
                 lastEvent[@"lastScheduleID"]=[scheduleID description];
                 lastEvent[@"lastLatenessSeconds"]=@(lateness);
