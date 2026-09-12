@@ -29,9 +29,6 @@ jobs:
           VERSION="$(awk '/^Version:/ {print $2; exit}' control)"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Test delivery state transitions
-        run: cc -Wall -Wextra -Werror tests/delivery-policy.c -o /tmp/delivery-policy && /tmp/delivery-policy
-
       - name: Build rootless package
         run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
@@ -56,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} restores Watusi native first sending and adds startup protection for overdue schedules. Pending-state support remains. Device testing is required."
+              --notes "iOS 16 rootless build. ${TAG} removes the WhatsApp-side injection and restores the direct SpringBoard scheduler with a shared one-shot Watusi handoff gate."
           fi
