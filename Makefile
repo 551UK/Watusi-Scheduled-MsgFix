@@ -18,7 +18,7 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 
 TOOL_NAME = WatusiShortcutSend
 WatusiShortcutSend_FILES = ShortcutsSend.m
-WatusiShortcutSend_CFLAGS = -fobjc-arc
+WatusiShortcutSend_CFLAGS = -fobjc-arc -Wno-unused-but-set-variable
 WatusiShortcutSend_FRAMEWORKS = Foundation
 WatusiShortcutSend_CODESIGN_FLAGS = -SShortcutsSend.entitlements
 
