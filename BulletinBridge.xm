@@ -39,8 +39,103 @@ static void LogEvent(NSDictionary *fields) {
         NSMutableDictionary *event = [NSMutableDictionary dictionaryWithDictionary:fields ?: @{}];
         event[@"date"] = [NSDate date];
         [events addObject:event];
-        while (events.count > 20) [events removeObjectAtIndex:0];
-        [@{@"version":@"3.0.1", @"date":[NSDate date], @"events":events} writeToFile:kDebug atomically:YES];
+        while (events.count > 30) [events removeObjectAtIndex:0];
+        [@{@"version":@"3.0.2", @"date":[NSDate date], @"events":events} writeToFile:kDebug atomically:YES];
+    }
+}
+
+static void BackgroundWakeNow(NSString *bundle, id sid) {
+    if (!IsWhatsApp(bundle)) return;
+
+    Class optionsClass = NSClassFromString(@"FBSOpenApplicationOptions");
+    Class serviceClass = NSClassFromString(@"FBSSystemService");
+    SEL optionsSel = NSSelectorFromString(@"optionsWithDictionary:");
+    SEL sharedSel = NSSelectorFromString(@"sharedService");
+    SEL openSel = NSSelectorFromString(@"openApplication:options:withResult:");
+
+    BOOL optionsReady = optionsClass && [optionsClass respondsToSelector:optionsSel];
+    BOOL serviceReady = serviceClass && [serviceClass respondsToSelector:sharedSel];
+
+    if (!optionsReady || !serviceReady) {
+        LogEvent(@{
+            @"event":@"background-wake",
+            @"result":@"frontboard-unavailable",
+            @"scheduleID":[sid description] ?: @"unknown",
+            @"bundleID":bundle,
+            @"optionsClassFound":@(optionsClass != Nil),
+            @"serviceClassFound":@(serviceClass != Nil),
+            @"optionsMethodFound":@(optionsReady),
+            @"sharedServiceFound":@(serviceReady)
+        });
+        return;
+    }
+
+    id options = nil;
+    id service = nil;
+    @try {
+        NSDictionary *dictionary = @{
+            @"__ActivateSuspended": @YES,
+            @"__LaunchOrigin": @"BulletinDestinationCoverSheet",
+            @"__Actions": @[]
+        };
+        options = ((id(*)(id,SEL,id))objc_msgSend)(optionsClass,optionsSel,dictionary);
+        service = ((id(*)(id,SEL))objc_msgSend)(serviceClass,sharedSel);
+    } @catch (NSException *e) {
+        LogEvent(@{
+            @"event":@"background-wake",
+            @"result":@"frontboard-setup-exception",
+            @"exception":e.name ?: @"unknown",
+            @"scheduleID":[sid description] ?: @"unknown"
+        });
+        return;
+    }
+
+    if (!service || ![service respondsToSelector:openSel]) {
+        LogEvent(@{
+            @"event":@"background-wake",
+            @"result":@"open-method-unavailable",
+            @"scheduleID":[sid description] ?: @"unknown",
+            @"serviceFound":@(service != nil)
+        });
+        return;
+    }
+
+    LogEvent(@{
+        @"event":@"background-wake-request",
+        @"scheduleID":[sid description] ?: @"unknown",
+        @"bundleID":bundle
+    });
+
+    void (^resultBlock)(NSError *) = ^(NSError *error) {
+        LogEvent(@{
+            @"event":@"background-wake-result",
+            @"scheduleID":[sid description] ?: @"unknown",
+            @"bundleID":bundle,
+            @"result":error ? @"error" : @"success",
+            @"errorDomain":error.domain ?: @"",
+            @"errorCode":@(error.code)
+        });
+    };
+
+    @try {
+        ((void(*)(id,SEL,id,id,id))objc_msgSend)(service,openSel,bundle,options,resultBlock);
+    } @catch (NSException *e) {
+        LogEvent(@{
+            @"event":@"background-wake",
+            @"result":@"open-exception",
+            @"exception":e.name ?: @"unknown",
+            @"scheduleID":[sid description] ?: @"unknown"
+        });
+    }
+}
+
+static void BackgroundWake(NSString *bundle, id sid) {
+    if ([NSThread isMainThread]) {
+        BackgroundWakeNow(bundle,sid);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            BackgroundWakeNow(bundle,sid);
+        });
     }
 }
 
@@ -109,6 +204,7 @@ static id ScheduleIDFromBulletin(id bulletin) {
     if (sid && IsWhatsApp(bundle)) {
         Remember(sid,bundle);
         LogEvent(@{@"event":@"helper-forward", @"scheduleID":[sid description], @"bundleID":bundle});
+        BackgroundWake(bundle,sid);
     }
     %orig;
 }
@@ -175,12 +271,16 @@ static void HandleBulletin(id bulletin, NSString *hook) {
         gLock = [NSObject new];
         %init(BulletinHooks);
 
-        Class cls = NSClassFromString(@"NCBulletinNotificationSource");
+        Class bulletinClass = NSClassFromString(@"NCBulletinNotificationSource");
+        Class optionsClass = NSClassFromString(@"FBSOpenApplicationOptions");
+        Class serviceClass = NSClassFromString(@"FBSSystemService");
         LogEvent(@{
             @"event":@"springboard-loaded",
-            @"bulletinClassFound":@(cls != Nil),
-            @"shortMethodFound":@(cls && [cls instancesRespondToSelector:NSSelectorFromString(@"observer:addBulletin:forFeed:")]),
-            @"longMethodFound":@(cls && [cls instancesRespondToSelector:NSSelectorFromString(@"observer:addBulletin:forFeed:playLightsAndSirens:withReply:")])
+            @"bulletinClassFound":@(bulletinClass != Nil),
+            @"shortMethodFound":@(bulletinClass && [bulletinClass instancesRespondToSelector:NSSelectorFromString(@"observer:addBulletin:forFeed:")]),
+            @"longMethodFound":@(bulletinClass && [bulletinClass instancesRespondToSelector:NSSelectorFromString(@"observer:addBulletin:forFeed:playLightsAndSirens:withReply:")]),
+            @"frontboardOptionsFound":@(optionsClass != Nil),
+            @"frontboardServiceFound":@(serviceClass != Nil)
         });
         dispatch_async(dispatch_get_main_queue(),^{ InstallObserver(); });
     }
