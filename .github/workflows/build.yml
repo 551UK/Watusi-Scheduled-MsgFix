@@ -53,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "Uses iOS Shortcuts' WhatsApp background messaging path for due Watusi direct messages and keeps pending sends for retry instead of dropping them after the scheduled minute."
+              --notes "Keeps due Watusi messages pending while offline, then sends them through iOS Shortcuts' WhatsApp background path after internet returns."
           fi
