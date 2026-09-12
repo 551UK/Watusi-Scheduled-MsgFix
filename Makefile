@@ -14,8 +14,8 @@ WatusiScheduledMsgFixCallServices_FILES = CallServicesFix.xm
 WatusiScheduledMsgFixCallServices_CFLAGS = -fobjc-arc
 WatusiScheduledMsgFixCallServices_FRAMEWORKS = Foundation
 
-WatusiScheduledMsgFixWA_FILES = WhatsAppDedupe.xm
+WatusiScheduledMsgFixWA_FILES = Outbox.xm
 WatusiScheduledMsgFixWA_CFLAGS = -fobjc-arc
-WatusiScheduledMsgFixWA_FRAMEWORKS = Foundation
+WatusiScheduledMsgFixWA_FRAMEWORKS = Foundation CoreData UIKit
 
 include $(THEOS_MAKE_PATH)/tweak.mk
