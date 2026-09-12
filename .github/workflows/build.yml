@@ -53,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "Clean iOS 16 rootless rewrite. Bridges modern scheduled WhatsApp notifications into Watusi's own scheduler and only fixes the callservicesd launch block. No custom sender, polling, outbox, or WhatsApp injection."
+              --notes "Fresh iOS 16 rootless rewrite. Repairs Watusi's modern SpringBoard schedule trigger while leaving Watusi's own wake, send, retry and delivery logic untouched. No custom sender, polling, outbox, callservicesd override or WhatsApp injection."
           fi
