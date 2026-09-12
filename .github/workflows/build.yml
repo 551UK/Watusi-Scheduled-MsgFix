@@ -1,6 +1,8 @@
 name: Build rootless deb
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
@@ -51,5 +53,5 @@ jobs:
             gh release create "$TAG" "$DEB" \
               --target "$GITHUB_SHA" \
               --title "Watusi Scheduled Message Fix ${TAG}" \
-              --notes "iOS 16 rootless build. ${TAG} fixes installation so dpkg finishes before any respring, while keeping the direct Watusi scheduler and retry logic."
+              --notes "iOS 16 rootless build. ${TAG} stops duplicate scheduled messages by locking an exact schedule after the first successful Watusi wake, while still retrying real wake failures."
           fi
