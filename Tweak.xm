@@ -3,7 +3,7 @@
 #import <notify.h>
 #import <unistd.h>
 
-static NSString * const WSSMFVersion = @"1.0.8";
+static NSString * const WSSMFVersion = @"1.0.9";
 static NSString * const WSSMFWhatsAppBundle = @"net.whatsapp.WhatsApp";
 static NSString * const WSSMFWhatsAppBusinessBundle = @"net.whatsapp.WhatsAppSMB";
 static NSString * const WSSMFScheduleIDKey = @"WatusiMessageScheduleID";
@@ -12,6 +12,7 @@ static NSString * const WSSMFContainersRoot = @"/var/mobile/Containers/Data/Appl
 static NSString * const WSSMFRunningSchedulePath = @"/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist";
 static NSString * const WSSMFDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist";
 static NSString * const WSSMFOldFiredPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-fired.plist";
+static NSString * const WSSMFDispatchedPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist";
 static const char *WSSMFPushNotificationName = "com.fouadraheb.watusi.pushkit-notification";
 static const NSTimeInterval WSSMFRetryInterval = 15.0;
 static const NSTimeInterval WSSMFMaxRecoveryAge = 86400.0;
@@ -20,11 +21,11 @@ static dispatch_queue_t gSchedulerQueue;
 static dispatch_source_t gSchedulerTimer;
 static NSMutableDictionary<NSString *, NSDate *> *gLastAttempt;
 static NSMutableDictionary<NSString *, NSNumber *> *gAttemptCount;
+static NSMutableDictionary<NSString *, NSDate *> *gDispatched;
 static NSUInteger gTick = 0;
 
 static BOOL WSSMFIsWhatsAppBundle(NSString *bundleID) {
-    return [bundleID isKindOfClass:[NSString class]] &&
-           ([bundleID isEqualToString:WSSMFWhatsAppBundle] || [bundleID isEqualToString:WSSMFWhatsAppBusinessBundle]);
+    return [bundleID isKindOfClass:[NSString class]] && ([bundleID isEqualToString:WSSMFWhatsAppBundle] || [bundleID isEqualToString:WSSMFWhatsAppBusinessBundle]);
 }
 
 static id WSSMFSafeValue(id object, NSString *name) {
@@ -81,6 +82,23 @@ static NSString *WSSMFKey(NSString *bundleID, id scheduleID, NSDate *date) {
     return [NSString stringWithFormat:@"%@|%@|%lld", bundleID, [scheduleID description], ms];
 }
 
+static void WSSMFLoadDispatched(void) {
+    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:WSSMFDispatchedPath];
+    gDispatched = stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+}
+
+static BOOL WSSMFWasDispatched(NSString *key) {
+    if (!gDispatched) WSSMFLoadDispatched();
+    return key.length && gDispatched[key] != nil;
+}
+
+static void WSSMFMarkDispatched(NSString *key) {
+    if (!key.length) return;
+    if (!gDispatched) WSSMFLoadDispatched();
+    gDispatched[key] = [NSDate date];
+    [gDispatched writeToFile:WSSMFDispatchedPath atomically:YES];
+}
+
 static NSArray<NSDictionary *> *WSSMFScheduleStores(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:WSSMFContainersRoot error:nil];
@@ -90,14 +108,13 @@ static NSArray<NSDictionary *> *WSSMFScheduleStores(void) {
         NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfFile:[container stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"]];
         NSString *bundleID = [metadata[@"MCMMetadataIdentifier"] isKindOfClass:[NSString class]] ? metadata[@"MCMMetadataIdentifier"] : nil;
         if (!WSSMFIsWhatsAppBundle(bundleID)) continue;
-        NSString *schedulePath = [container stringByAppendingPathComponent:WSSMFScheduleRelativePath];
-        [stores addObject:@{@"bundleID":bundleID,@"schedulePath":schedulePath}];
+        [stores addObject:@{@"bundleID":bundleID,@"schedulePath":[container stringByAppendingPathComponent:WSSMFScheduleRelativePath]}];
     }
     if (!stores.count) {
         for (NSString *entry in entries ?: @[]) {
             NSString *container = [WSSMFContainersRoot stringByAppendingPathComponent:entry];
-            NSString *schedulePath = [container stringByAppendingPathComponent:WSSMFScheduleRelativePath];
-            if ([fm fileExistsAtPath:schedulePath]) [stores addObject:@{@"bundleID":WSSMFWhatsAppBundle,@"schedulePath":schedulePath}];
+            NSString *path = [container stringByAppendingPathComponent:WSSMFScheduleRelativePath];
+            if ([fm fileExistsAtPath:path]) [stores addObject:@{@"bundleID":WSSMFWhatsAppBundle,@"schedulePath":path}];
         }
     }
     return stores;
@@ -113,7 +130,7 @@ static NSArray *WSSMFReadSchedules(NSString *path, NSString **rootTypeOut) {
             if ([value isKindOfClass:[NSArray class]]) { if (rootTypeOut) *rootTypeOut = [@"dictionary:" stringByAppendingString:key]; return value; }
         }
         if (rootTypeOut) *rootTypeOut = @"dictionary:no-array-key";
-    } else if (rootTypeOut) *rootTypeOut = root ? NSStringFromClass([root class]) : @"unreadable";
+    }
     return @[];
 }
 
@@ -127,7 +144,7 @@ static BOOL WSSMFManualBridge(id scheduleID, NSString *bundleID, NSString **resu
 }
 
 static BOOL WSSMFFire(id scheduleID, NSString *bundleID, NSString **resultOut) {
-    if (!scheduleID || !WSSMFIsWhatsAppBundle(bundleID)) { if (resultOut) *resultOut=@"invalid-schedule-or-bundle"; return NO; }
+    if (!scheduleID || !WSSMFIsWhatsAppBundle(bundleID)) return NO;
     Class helper = NSClassFromString(@"WSSchedulerHelper");
     SEL selector = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
     if (helper && [helper respondsToSelector:selector]) {
@@ -166,13 +183,8 @@ static void WSSMFScanSchedules(NSString *reason) {
             NSString *key = WSSMFKey(bundleID,scheduleID,scheduledDate);
             if (!key.length) continue;
             [activeKeys addObject:key];
-            if (lateness > WSSMFMaxRecoveryAge) {
-                lastEvent = [NSMutableDictionary dictionary];
-                lastEvent[@"lastResult"]=@"overdue-beyond-24h-not-sent";
-                lastEvent[@"lastScheduleID"]=[scheduleID description];
-                lastEvent[@"lastLatenessSeconds"]=@(lateness);
-                continue;
-            }
+            if (WSSMFWasDispatched(key)) continue;
+            if (lateness > WSSMFMaxRecoveryAge) continue;
 
             NSDate *last = gLastAttempt[key];
             if (last && [now timeIntervalSinceDate:last] < WSSMFRetryInterval) continue;
@@ -181,13 +193,18 @@ static void WSSMFScanSchedules(NSString *reason) {
 
             NSString *result=nil;
             BOOL posted=WSSMFFire(scheduleID,bundleID,&result);
+            if (posted) {
+                WSSMFMarkDispatched(key);
+                [gLastAttempt removeObjectForKey:key];
+                [gAttemptCount removeObjectForKey:key];
+            }
             lastEvent[@"lastResult"]=result ?: @"unknown";
             lastEvent[@"lastScheduleID"]=[scheduleID description] ?: @"unknown";
             lastEvent[@"lastBundleID"]=bundleID ?: @"unknown";
             lastEvent[@"lastScheduledDate"]=scheduledDate;
             lastEvent[@"lastLatenessSeconds"]=@(lateness);
             lastEvent[@"lastWakePosted"]=@(posted);
-            lastEvent[@"attemptCount"]=gAttemptCount[key];
+            lastEvent[@"markedDispatched"]=@(posted);
         }
     }
 
@@ -195,7 +212,7 @@ static void WSSMFScanSchedules(NSString *reason) {
 
     gTick++;
     if ((gTick % 10)==0 || lastEvent.count || [reason isEqualToString:@"scheduler-start"]) {
-        NSMutableDictionary *debug=[@{@"event":reason ?: @"scan",@"result":@"springboard-direct-store-scan",@"scheduleCount":@(scheduleCount),@"rootTypes":rootTypes,@"nextDue":nextDue ?: @"none",@"helperFound":@(NSClassFromString(@"WSSchedulerHelper")!=Nil),@"retryInterval":@(WSSMFRetryInterval)} mutableCopy];
+        NSMutableDictionary *debug=[@{@"event":reason ?: @"scan",@"result":@"springboard-direct-store-scan",@"scheduleCount":@(scheduleCount),@"rootTypes":rootTypes,@"nextDue":nextDue ?: @"none",@"helperFound":@(NSClassFromString(@"WSSchedulerHelper")!=Nil),@"retryInterval":@(WSSMFRetryInterval),@"dispatchedCount":@(gDispatched.count)} mutableCopy];
         [debug addEntriesFromDictionary:lastEvent];
         WSSMFWriteDebug(debug);
     }
@@ -204,6 +221,7 @@ static void WSSMFScanSchedules(NSString *reason) {
 static void WSSMFStartSpringBoardScheduler(void) {
     gLastAttempt=[NSMutableDictionary dictionary];
     gAttemptCount=[NSMutableDictionary dictionary];
+    WSSMFLoadDispatched();
     [[NSFileManager defaultManager] removeItemAtPath:WSSMFOldFiredPath error:nil];
     gSchedulerQueue=dispatch_queue_create("com.551.watusischeduledmsgfix.springboard",DISPATCH_QUEUE_SERIAL);
     gSchedulerTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,gSchedulerQueue);
