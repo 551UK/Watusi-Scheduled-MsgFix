@@ -1,6 +1,6 @@
 Package: com.551.watusischeduledmsgfix
 Name: Watusi Scheduled Message Fix
-Version: 3.1.1
+Version: 3.1.2
 Architecture: iphoneos-arm64
 Description: Improves Watusi scheduled-message handling on iOS 16.
 Maintainer: 551
