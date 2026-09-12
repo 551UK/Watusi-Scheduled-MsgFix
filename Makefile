@@ -7,14 +7,14 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = WatusiScheduledMsgFixSB
 
 WatusiScheduledMsgFixSB_FILES = BulletinBridge.xm
-WatusiScheduledMsgFixSB_CFLAGS = -fobjc-arc
+WatusiScheduledMsgFixSB_CFLAGS = -fobjc-arc -Wno-unused-function
 WatusiScheduledMsgFixSB_FRAMEWORKS = Foundation
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 TOOL_NAME = WatusiShortcutSend
 WatusiShortcutSend_FILES = ShortcutsSend.m
-WatusiShortcutSend_CFLAGS = -fobjc-arc
+WatusiShortcutSend_CFLAGS = -fobjc-arc -Wno-unused-function
 WatusiShortcutSend_FRAMEWORKS = Foundation
 WatusiShortcutSend_CODESIGN_FLAGS = -SShortcutsSend.entitlements
 
