@@ -11,12 +11,13 @@ static NSString * const WSSMFScheduleRelativePath = @"Library/Preferences/com.fo
 static NSString * const WSSMFContainersRoot = @"/var/mobile/Containers/Data/Application";
 static NSString * const WSSMFRunningSchedulePath = @"/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist";
 static NSString * const WSSMFDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist";
+static NSString * const WSSMFHelperDedupeDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-dedupe.plist";
 static NSString * const WSSMFOldFiredPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-fired.plist";
 static NSString * const WSSMFDispatchedPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist";
 static const char *WSSMFPushNotificationName = "com.fouadraheb.watusi.pushkit-notification";
 static const NSTimeInterval WSSMFRetryInterval = 15.0;
 static const NSTimeInterval WSSMFMaxRecoveryAge = 86400.0;
-static const NSTimeInterval WSSMFDedupeWindow = 60.0;
+static const NSTimeInterval WSSMFHelperDedupeWindow = 60.0;
 
 static dispatch_queue_t gSchedulerQueue;
 static dispatch_source_t gSchedulerTimer;
@@ -25,9 +26,10 @@ static NSMutableDictionary<NSString *, NSNumber *> *gAttemptCount;
 static NSMutableDictionary<NSString *, NSDate *> *gDispatched;
 static NSUInteger gTick = 0;
 
-static NSMutableDictionary<NSString *, NSDate *> *gRecentScheduleIDs;
-static NSObject *gDedupeLock;
-static BOOL gDedupeHookInstalled = NO;
+static NSMutableDictionary<NSString *, NSDate *> *gRecentHelperDispatches;
+static NSObject *gHelperDedupeLock;
+static BOOL gHelperDedupeHookInstalled = NO;
+static __thread BOOL gDirectHelperCall = NO;
 
 static BOOL WSSMFIsWhatsAppBundle(NSString *bundleID) {
     return [bundleID isKindOfClass:[NSString class]] && ([bundleID isEqualToString:WSSMFWhatsAppBundle] || [bundleID isEqualToString:WSSMFWhatsAppBusinessBundle]);
@@ -61,56 +63,47 @@ static void WSSMFWriteDebug(NSDictionary *extra) {
     [debug writeToFile:WSSMFDebugPath atomically:YES];
 }
 
-static NSString *WSSMFDedupeDebugPath(void) {
-    return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/com.551.watusischeduledmsgfix-wa-dedupe.plist"];
-}
-
-static void WSSMFWriteDedupeDebug(NSString *route, id scheduleID, NSString *result) {
-    NSMutableDictionary *debug = [NSMutableDictionary dictionary];
-    debug[@"version"] = WSSMFVersion;
-    debug[@"date"] = [NSDate date];
-    debug[@"process"] = [[NSProcessInfo processInfo] processName] ?: @"unknown";
-    debug[@"route"] = route ?: @"unknown";
-    debug[@"scheduleID"] = scheduleID ? [scheduleID description] : @"nil";
-    debug[@"result"] = result ?: @"unknown";
-    [debug writeToFile:WSSMFDedupeDebugPath() atomically:YES];
-}
-
-static void WSSMFEnsureDedupeState(void) {
+static void WSSMFEnsureHelperDedupeState(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        gRecentScheduleIDs = [NSMutableDictionary dictionary];
-        gDedupeLock = [NSObject new];
+        gRecentHelperDispatches = [NSMutableDictionary dictionary];
+        gHelperDedupeLock = [NSObject new];
     });
 }
 
-static BOOL WSSMFClaimScheduleID(id scheduleID, NSString *route) {
-    if (!scheduleID) return YES;
-    WSSMFEnsureDedupeState();
+static BOOL WSSMFClaimHelperDispatch(id scheduleID, NSString *bundleID, NSString *source) {
+    if (!scheduleID || !bundleID.length) return YES;
+    WSSMFEnsureHelperDedupeState();
 
-    NSString *key = [scheduleID description];
-    if (!key.length) return YES;
-
+    NSString *key = [NSString stringWithFormat:@"%@|%@", bundleID, [scheduleID description]];
     NSDate *now = [NSDate date];
     BOOL allow = YES;
 
-    @synchronized (gDedupeLock) {
-        for (NSString *existingKey in [gRecentScheduleIDs.allKeys copy]) {
-            NSDate *date = gRecentScheduleIDs[existingKey];
-            if (!date || [now timeIntervalSinceDate:date] > WSSMFDedupeWindow) {
-                [gRecentScheduleIDs removeObjectForKey:existingKey];
+    @synchronized (gHelperDedupeLock) {
+        for (NSString *existingKey in [gRecentHelperDispatches.allKeys copy]) {
+            NSDate *date = gRecentHelperDispatches[existingKey];
+            if (!date || [now timeIntervalSinceDate:date] > WSSMFHelperDedupeWindow) {
+                [gRecentHelperDispatches removeObjectForKey:existingKey];
             }
         }
 
-        NSDate *previous = gRecentScheduleIDs[key];
-        if (previous && [now timeIntervalSinceDate:previous] <= WSSMFDedupeWindow) {
+        NSDate *previous = gRecentHelperDispatches[key];
+        if (previous && [now timeIntervalSinceDate:previous] <= WSSMFHelperDedupeWindow) {
             allow = NO;
         } else {
-            gRecentScheduleIDs[key] = now;
+            gRecentHelperDispatches[key] = now;
         }
     }
 
-    WSSMFWriteDedupeDebug(route, scheduleID, allow ? @"allowed-first-route" : @"suppressed-duplicate-route");
+    NSDictionary *debug = @{
+        @"version": WSSMFVersion,
+        @"date": now,
+        @"scheduleID": [scheduleID description] ?: @"unknown",
+        @"bundleID": bundleID ?: @"unknown",
+        @"source": source ?: @"unknown",
+        @"result": allow ? @"allowed-first-helper-dispatch" : @"suppressed-duplicate-helper-dispatch"
+    };
+    [debug writeToFile:WSSMFHelperDedupeDebugPath atomically:YES];
     return allow;
 }
 
@@ -207,10 +200,14 @@ static BOOL WSSMFFire(id scheduleID, NSString *bundleID, NSString **resultOut) {
     SEL selector = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
     if (helper && [helper respondsToSelector:selector]) {
         @try {
+            gDirectHelperCall = YES;
             ((void (*)(id,SEL,id,id))objc_msgSend)(helper,selector,scheduleID,bundleID);
             if (resultOut) *resultOut=@"called-watusi-sendPush-helper";
             return YES;
-        } @catch (__unused NSException *exception) {}
+        } @catch (__unused NSException *exception) {
+        } @finally {
+            gDirectHelperCall = NO;
+        }
     }
     return WSSMFManualBridge(scheduleID,bundleID,resultOut);
 }
@@ -289,17 +286,13 @@ static void WSSMFStartSpringBoardScheduler(void) {
     dispatch_async(gSchedulerQueue,^{ WSSMFScanSchedules(@"scheduler-start"); });
 }
 
-%group WSSMFDedupe
+%group WSSMFHelperDedupe
 
-%hook WSScheduleHandler
+%hook WSSchedulerHelper
 
-- (void)processScheduleFromPushKitNotificationWithID:(id)scheduleID {
-    if (!WSSMFClaimScheduleID(scheduleID, @"pushkit")) return;
-    %orig;
-}
-
-- (void)processScheduleFromLocalNotificationWhileAppActiveWithID:(id)scheduleID {
-    if (!WSSMFClaimScheduleID(scheduleID, @"local-active")) return;
++ (void)sendPushNotificationForScheduleID:(id)scheduleID bundleIdentifier:(NSString *)bundleID {
+    NSString *source = gDirectHelperCall ? @"direct-scheduler" : @"watusi-native";
+    if (!WSSMFClaimHelperDispatch(scheduleID, bundleID, source)) return;
     %orig;
 }
 
@@ -307,18 +300,20 @@ static void WSSMFStartSpringBoardScheduler(void) {
 
 %end
 
-static void WSSMFTryInstallDedupeHook(void) {
-    if (gDedupeHookInstalled) return;
+static void WSSMFTryInstallHelperDedupeHook(void) {
+    if (gHelperDedupeHookInstalled) return;
 
-    if (NSClassFromString(@"WSScheduleHandler")) {
-        %init(WSSMFDedupe);
-        gDedupeHookInstalled = YES;
-        WSSMFWriteDedupeDebug(@"hook", @"none", @"installed");
+    Class helper = NSClassFromString(@"WSSchedulerHelper");
+    SEL selector = NSSelectorFromString(@"sendPushNotificationForScheduleID:bundleIdentifier:");
+    if (helper && [helper respondsToSelector:selector]) {
+        %init(WSSMFHelperDedupe);
+        gHelperDedupeHookInstalled = YES;
+        WSSMFWriteDebug(@{@"event":@"helper-dedupe-hook",@"result":@"installed"});
         return;
     }
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        WSSMFTryInstallDedupeHook();
+        WSSMFTryInstallHelperDedupeHook();
     });
 }
 
@@ -334,14 +329,10 @@ static void WSSMFTryInstallDedupeHook(void) {
     @autoreleasepool {
         NSString *bundleID=[[NSBundle mainBundle] bundleIdentifier];
         NSString *processName=[[NSProcessInfo processInfo] processName];
-
         if ([bundleID isEqualToString:@"com.apple.springboard"] || [processName isEqualToString:@"SpringBoard"]) {
+            WSSMFEnsureHelperDedupeState();
+            dispatch_async(dispatch_get_main_queue(), ^{ WSSMFTryInstallHelperDedupeHook(); });
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{ WSSMFStartSpringBoardScheduler(); });
-        } else if (WSSMFIsWhatsAppBundle(bundleID)) {
-            WSSMFEnsureDedupeState();
-            dispatch_async(dispatch_get_main_queue(), ^{
-                WSSMFTryInstallDedupeHook();
-            });
         }
     }
 }
