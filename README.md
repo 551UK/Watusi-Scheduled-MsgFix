@@ -2,6 +2,6 @@
 
 For iOS 16 rootless with Watusi 1.3.23.
 
-2.0.0 is a clean rewrite. It does not scan schedule dates or send messages itself. It passes iOS 16 scheduled WhatsApp notifications back into Watusi's own scheduler and only fixes the system launch block needed when WhatsApp is closed or locked.
+3.0.0 is a fresh rewrite. It repairs Watusi's old SpringBoard scheduled-notification trigger on iOS 16 and then leaves Watusi's own wake, send, retry and delivery logic alone.
 
-No WhatsApp injection and no custom outbox.
+No custom sender, no schedule polling, no outbox, no callservicesd override and no WhatsApp injection.
