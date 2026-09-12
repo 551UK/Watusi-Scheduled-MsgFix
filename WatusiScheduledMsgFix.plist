@@ -7,12 +7,10 @@
         <key>Bundles</key>
         <array>
             <string>com.apple.springboard</string>
-            <string>com.apple.calls.telephonyutilities</string>
         </array>
         <key>Executables</key>
         <array>
             <string>SpringBoard</string>
-            <string>callservicesd</string>
         </array>
     </dict>
 </dict>
