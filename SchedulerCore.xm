@@ -3,7 +3,7 @@
 #import <notify.h>
 #import <unistd.h>
 
-static NSString * const kVersion = @"1.0.14";
+static NSString * const kVersion = @"1.0.15";
 static NSString * const kWA = @"net.whatsapp.WhatsApp";
 static NSString * const kWAB = @"net.whatsapp.WhatsAppSMB";
 static NSString * const kScheduleIDKey = @"WatusiMessageScheduleID";
