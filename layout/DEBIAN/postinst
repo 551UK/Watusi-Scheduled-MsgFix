@@ -2,17 +2,22 @@
 
 if [ "$1" = "configure" ]; then
     rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist 2>/dev/null || true
+    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-callkit-gate.plist 2>/dev/null || true
+    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-gate.plist 2>/dev/null || true
+    rm -f /var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-dedupe.plist 2>/dev/null || true
 
-    # 1.0.15 injected a third component directly into WhatsApp. 1.0.16 no longer
-    # does that, so remove any stale copy even if an older package left it behind.
-    rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/WatusiScheduledMsgFixWA.dylib 2>/dev/null || true
-    rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/WatusiScheduledMsgFixWA.plist 2>/dev/null || true
-    rm -f /Library/MobileSubstrate/DynamicLibraries/WatusiScheduledMsgFixWA.dylib 2>/dev/null || true
-    rm -f /Library/MobileSubstrate/DynamicLibraries/WatusiScheduledMsgFixWA.plist 2>/dev/null || true
+    # Remove obsolete components from older test builds. These are not part of
+    # 1.0.17 and must not remain available to inject alongside the current pair.
+    for base in /var/jb/Library/MobileSubstrate/DynamicLibraries /Library/MobileSubstrate/DynamicLibraries; do
+        rm -f "$base/WatusiScheduledMsgFixWA.dylib" 2>/dev/null || true
+        rm -f "$base/WatusiScheduledMsgFixWA.plist" 2>/dev/null || true
+        rm -f "$base/WatusiScheduledMsgFixSB.dylib" 2>/dev/null || true
+        rm -f "$base/WatusiScheduledMsgFixSB.plist" 2>/dev/null || true
+    done
 
     # Clean up the old v1.0.3 LaunchDaemon if it is still present.
-    # Do not respring or kill SpringBoard here: postinst runs inside dpkg,
-    # and doing that before dpkg finishes leaves the package interrupted.
+    # Never respring or kill SpringBoard here: postinst runs inside dpkg and
+    # doing that before dpkg finishes leaves the package interrupted.
     if [ -x /bin/launchctl ]; then
         /bin/launchctl bootout system/com.551.watusischeduledmsgfix.daemon 2>/dev/null || true
     elif [ -x /var/jb/bin/launchctl ]; then
