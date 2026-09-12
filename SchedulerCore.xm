@@ -12,14 +12,10 @@ static NSString * const kContainersRoot = @"/var/mobile/Containers/Data/Applicat
 static NSString * const kRunningSchedulePath = @"/var/mobile/Library/Preferences/com.fouadraheb.running-schedule-info.plist";
 static NSString * const kDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-debug.plist";
 static NSString * const kGateDebugPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-helper-gate.plist";
-static NSString * const kDispatchedPath = @"/var/mobile/Library/Preferences/com.551.watusischeduledmsgfix-dispatched.plist";
 static const char *kPushNotification = "com.fouadraheb.watusi.pushkit-notification";
-static const NSTimeInterval kMaxRecoveryAge = 60.0;
 
 static dispatch_queue_t gQueue;
 static dispatch_source_t gTimer;
-static NSMutableDictionary<NSString *, NSDate *> *gDispatched;
-static NSUInteger gTick = 0;
 static BOOL gGateInstalled = NO;
 static NSMutableDictionary *gRecentBridges;
 
@@ -48,49 +44,6 @@ static void WriteGateDebug(id scheduleID, NSString *bundleID, NSString *result) 
     } writeToFile:kGateDebugPath atomically:YES];
 }
 
-static NSDate *DateFromValue(id value) {
-    if ([value isKindOfClass:[NSDate class]]) return value;
-    if ([value isKindOfClass:[NSNumber class]]) {
-        NSTimeInterval n = [value doubleValue];
-        if (n > 100000000000.0) n /= 1000.0;
-        return [NSDate dateWithTimeIntervalSince1970:n];
-    }
-    if ([value isKindOfClass:[NSString class]]) {
-        for (NSString *fmt in @[@"yyyy-MM-dd HH:mm:ss Z", @"yyyy-MM-dd'T'HH:mm:ssZZZZZ", @"yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ"]) {
-            NSDateFormatter *f = [NSDateFormatter new];
-            f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-            f.timeZone = [NSTimeZone localTimeZone];
-            f.dateFormat = fmt;
-            NSDate *date = [f dateFromString:value];
-            if (date) return date;
-        }
-    }
-    return nil;
-}
-
-static NSString *ScheduleKey(NSString *bundleID, id scheduleID, NSDate *date) {
-    if (!bundleID.length || !scheduleID || !date) return nil;
-    long long ms = (long long)llround([date timeIntervalSince1970] * 1000.0);
-    return [NSString stringWithFormat:@"%@|%@|%lld", bundleID, [scheduleID description], ms];
-}
-
-static void LoadDispatched(void) {
-    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:kDispatchedPath];
-    gDispatched = stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
-}
-
-static BOOL WasDispatched(NSString *key) {
-    if (!gDispatched) LoadDispatched();
-    return key.length && gDispatched[key] != nil;
-}
-
-static void MarkDispatched(NSString *key) {
-    if (!key.length) return;
-    if (!gDispatched) LoadDispatched();
-    gDispatched[key] = [NSDate date];
-    [gDispatched writeToFile:kDispatchedPath atomically:YES];
-}
-
 static NSArray<NSDictionary *> *ScheduleStores(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:kContainersRoot error:nil];
@@ -115,27 +68,6 @@ static NSArray<NSDictionary *> *ScheduleStores(void) {
     return stores;
 }
 
-static NSArray *ReadSchedules(NSString *path, NSString **rootTypeOut) {
-    id root = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (!root) root = [NSArray arrayWithContentsOfFile:path];
-
-    if ([root isKindOfClass:[NSArray class]]) {
-        if (rootTypeOut) *rootTypeOut = @"array";
-        return root;
-    }
-    if ([root isKindOfClass:[NSDictionary class]]) {
-        for (NSString *key in @[@"schedules", @"scheduledMessages", @"messages", @"items"]) {
-            id value = root[key];
-            if ([value isKindOfClass:[NSArray class]]) {
-                if (rootTypeOut) *rootTypeOut = [@"dictionary:" stringByAppendingString:key];
-                return value;
-            }
-        }
-        if (rootTypeOut) *rootTypeOut = @"dictionary:no-array-key";
-    }
-    return @[];
-}
-
 // Both native notifications and the polling fallback use this same handoff.
 // A void helper return is not evidence that its file was written.
 static BOOL ManualBridge(id scheduleID, NSString *bundleID, NSString **resultOut) {
@@ -152,6 +84,13 @@ static BOOL ManualBridge(id scheduleID, NSString *bundleID, NSString **resultOut
         }
         // Watusi consumes one file. Never overwrite a different pending schedule.
         if ([[NSFileManager defaultManager] fileExistsAtPath:kRunningSchedulePath]) {
+            NSDictionary *pending=[NSDictionary dictionaryWithContentsOfFile:kRunningSchedulePath];
+            if ([pending[@"bundleID"] isEqual:bundleID] && [pending[@"userInfo"][kScheduleIDKey] isEqual:scheduleID]) {
+                BOOL posted=notify_post(kPushNotification)==NOTIFY_STATUS_OK;
+                if (posted) gRecentBridges[key]=now;
+                if (resultOut) *resultOut=@"pending-handoff-wake-retried";
+                return posted;
+            }
             if (resultOut) *resultOut = @"handoff-busy-waiting-for-consumer";
             return NO;
         }
@@ -182,78 +121,45 @@ static BOOL FireSchedule(id scheduleID, NSString *bundleID, NSString **resultOut
     return ManualBridge(scheduleID, bundleID, resultOut);
 }
 
-static void ScanSchedules(NSString *reason) {
-    NSDate *now = [NSDate date];
-    NSMutableDictionary *lastEvent = [NSMutableDictionary dictionary];
-    NSMutableArray *rootTypes = [NSMutableArray array];
-    NSUInteger scheduleCount = 0;
-    NSDate *nextDue = nil;
-
+static NSMutableDictionary *gLastWake;
+static void ScanSchedules(void) {
+    if (!gLastWake) gLastWake = [NSMutableDictionary dictionary];
+    NSDate *now=[NSDate date];
     for (NSDictionary *store in ScheduleStores()) {
-        NSString *bundleID = store[@"bundleID"];
-        NSString *rootType = nil;
-        NSArray *schedules = ReadSchedules(store[@"schedulePath"], &rootType);
-        [rootTypes addObject:rootType ?: @"unknown"];
-        scheduleCount += schedules.count;
-
-        for (id object in schedules) {
-            if (![object isKindOfClass:[NSDictionary class]]) continue;
-            id scheduleID = object[@"id"] ?: object[@"uniqueID"];
-            NSDate *scheduledDate = DateFromValue(object[@"date"]);
-            if (!scheduleID || !scheduledDate) continue;
-
-            NSTimeInterval lateness = [now timeIntervalSinceDate:scheduledDate];
-            if (lateness < 0) {
-                if (!nextDue || [scheduledDate compare:nextDue] == NSOrderedAscending) nextDue = scheduledDate;
-                continue;
-            }
-            if (lateness > kMaxRecoveryAge) continue;
-
-            NSString *key = ScheduleKey(bundleID,scheduleID,scheduledDate);
-            if (!key.length || WasDispatched(key)) continue;
-
-            NSString *result = nil;
-            BOOL posted = FireSchedule(scheduleID,bundleID,&result);
-            if (posted) MarkDispatched(key);
-
-            lastEvent[@"lastResult"] = result ?: @"unknown";
-            lastEvent[@"lastScheduleID"] = [scheduleID description] ?: @"unknown";
-            lastEvent[@"lastBundleID"] = bundleID ?: @"unknown";
-            lastEvent[@"lastScheduledDate"] = scheduledDate;
-            lastEvent[@"lastLatenessSeconds"] = @(lateness);
-            lastEvent[@"lastWakePosted"] = @(posted);
+        NSString *path=[[store[@"schedulePath"] stringByDeletingLastPathComponent]
+            stringByAppendingPathComponent:@"com.551.watusischeduledmsgfix-outbox.plist"];
+        NSDictionary *rows=[NSDictionary dictionaryWithContentsOfFile:path];
+        if (![rows isKindOfClass:[NSDictionary class]]) continue;
+        for (NSString *key in rows) {
+            NSDictionary *row=rows[key];
+            if (![row isKindOfClass:[NSDictionary class]] || ![row[@"status"] isEqual:@"pending"] ||
+                ![row[@"date"] isKindOfClass:[NSDate class]] || [row[@"date"] compare:now]==NSOrderedDescending || !row[@"id"]) continue;
+            NSString *wakeKey=[store[@"bundleID"] stringByAppendingFormat:@"|%@",key];
+            NSDate *last=gLastWake[wakeKey];
+            if (last && [now timeIntervalSinceDate:last]<60) continue;
+            NSString *result=nil;
+            BOOL posted=FireSchedule(row[@"id"],store[@"bundleID"],&result);
+            if (posted) gLastWake[wakeKey]=now;
+            WriteDebug(@{@"result":result ?: @"unknown",@"wakeRequested":@(posted),@"deliveryConfirmed":@NO});
         }
     }
-
-    gTick++;
-    if ((gTick % 10) == 0 || lastEvent.count || [reason isEqualToString:@"scheduler-start"]) {
-        NSMutableDictionary *debug = [@{@"event":reason ?: @"scan",
-                                        @"result":@"springboard-direct-store-scan",
-                                        @"scheduleCount":@(scheduleCount),
-                                        @"rootTypes":rootTypes,
-                                        @"nextDue":nextDue ?: @"none",
-                                        @"helperFound":@(NSClassFromString(@"WSSchedulerHelper") != Nil),
-                                        @"dispatchedCount":@(gDispatched.count)} mutableCopy];
-        [debug addEntriesFromDictionary:lastEvent];
-        WriteDebug(debug);
-    }
 }
-
 static void StartScheduler(void) {
-    LoadDispatched();
-    gQueue = dispatch_get_main_queue();
-    gTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,gQueue);
-    dispatch_source_set_timer(gTimer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,100*NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(gTimer,^{ ScanSchedules(@"timer-scan"); });
+    gQueue=dispatch_get_main_queue();
+    gTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,gQueue);
+    dispatch_source_set_timer(gTimer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),5*NSEC_PER_SEC,100*NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(gTimer,^{ @autoreleasepool { ScanSchedules(); } });
     dispatch_resume(gTimer);
-    dispatch_async(gQueue,^{ ScanSchedules(@"scheduler-start"); });
 }
 
 %group WSSMFHelperGate
 %hook WSSchedulerHelper
 + (void)sendCallKitNotificationWithUserInfo:(id)userInfo bundleIdentifier:(NSString *)bundleID {
     id scheduleID = [userInfo isKindOfClass:[NSDictionary class]] ? userInfo[kScheduleIDKey] : nil;
-    if (!IsWA(bundleID) || !scheduleID) { %orig; return; }
+    if (!IsWA(bundleID) || !scheduleID) {
+        %orig;
+        return;
+    }
     NSString *result = nil;
     ManualBridge(scheduleID, bundleID, &result);
     WriteGateDebug(scheduleID, bundleID, result);
