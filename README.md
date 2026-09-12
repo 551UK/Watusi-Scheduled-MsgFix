@@ -1,9 +1,7 @@
 # Watusi Scheduled Message Fix
 
-For iOS 16 rootless, Watusi 1.3.23 and WatusiTools 2.8.4.
+For iOS 16 rootless with Watusi 1.3.23.
 
-1.0.17 goes back to the proven 1.0.10 scheduler/send path. It calls Watusi's own scheduler helper so Watusi performs its normal rootless handoff, then blocks only a second identical final handoff for a few seconds to prevent the double message.
+2.0.0 is a clean rewrite. It does not scan schedule dates or send messages itself. It passes iOS 16 scheduled WhatsApp notifications back into Watusi's own scheduler and only fixes the system launch block needed when WhatsApp is closed or locked.
 
-It does not inject into WhatsApp.
-
-Install the deb, let Sileo finish, then userspace reboot or reboot/re-jailbreak. Open WhatsApp once and create a fresh schedule at least a minute ahead.
+No WhatsApp injection and no custom outbox.
