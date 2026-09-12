@@ -173,18 +173,13 @@ static void Tick(void) {
         id manager=Shared(@"WSSchedulesManager");
         id schedules=Get(manager,@"schedules");
         if (![schedules isKindOfClass:[NSArray class]]) return;
-        NSMutableSet *current=[NSMutableSet set];
         for (id s in schedules) {
             NSString *key=Key(s); if (!key) continue;
-            [current addObject:key];
             NSMutableDictionary *row=Register(s);
             if (row) Process(s,key,row);
         }
-        BOOL changed=NO;
-        for (NSString *key in [ledger.allKeys copy]) if (![current containsObject:key]) {
-            [ledger removeObjectForKey:key]; changed=YES;
-        }
-        if (changed) Save();
+        // Do not erase durable state while WhatsApp's manager is loading.
+        // Explicit save/delete hooks own lifecycle cleanup.
     } @finally { ticking=NO; }
 }
 // Capture newly inserted outgoing objects, not a chat's arbitrary last message.
@@ -228,6 +223,13 @@ static void Saved(NSNotification *notification) {
 %group DurableOutbox
 %hook WSSchedulesManager
 - (void)addOrUpdateSchedule:(id)schedule {
+    Load();
+    NSString *newKey=Key(schedule);
+    id uid=Get(schedule,@"uniqueID");
+    for (NSString *oldKey in [ledger.allKeys copy])
+        if ([ledger[oldKey][@"id"] isEqual:uid] &&
+            (![oldKey isEqual:newKey] || !OneOff(schedule))) [ledger removeObjectForKey:oldKey];
+    Save();
     Register(schedule);
     %orig;
 }
