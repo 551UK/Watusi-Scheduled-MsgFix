@@ -1,8 +1,8 @@
 Package: com.551.watusischeduledmsgfix
 Name: Watusi Scheduled Message Fix
-Version: 3.0.2
+Version: 3.1.0
 Architecture: iphoneos-arm64
-Description: Fixes Watusi scheduled-message triggering and background wake on iOS 16.
+Description: Sends due Watusi messages through iOS Shortcuts' WhatsApp background messaging path.
 Maintainer: 551
 Author: 551
 Section: Tweaks
