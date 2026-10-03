@@ -56,7 +56,7 @@ jobs:
               --notes "Stable cleanup build. Sends scheduled WhatsApp messages in the background and waits for internet before sending overdue messages."
           fi
 
-      - name: Remove older release DEBs
+      - name: Remove older releases
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,9 +64,9 @@ jobs:
         run: |
           CURRENT_TAG="v${VERSION}"
           gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | select(.tag_name != "'"$CURRENT_TAG"'") | .assets[]? | select(.name | endswith(".deb")) | .id' |
-          while read -r ASSET_ID; do
-            [ -z "$ASSET_ID" ] && continue
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}"
+            --jq '.[] | select(.tag_name != "'"$CURRENT_TAG"'") | .tag_name' |
+          while read -r OLD_TAG; do
+            [ -z "$OLD_TAG" ] && continue
+            gh release delete "$OLD_TAG" --cleanup-tag -y
           done
 
