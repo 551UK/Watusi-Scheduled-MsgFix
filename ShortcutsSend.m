@@ -49,15 +49,16 @@ static NSString *CleanPhone(NSString *input) {
     return WSMFNormalizePhone(input,NULL);
 }
 
-static NSData *WorkflowData(NSString *phone, NSString *message) {
+static NSData *WorkflowData(NSString *phone, NSString *message, NSString *bundle) {
     NSString *cleanPhone = CleanPhone(phone);
-    if (!cleanPhone.length || ![message isKindOfClass:[NSString class]] || !message.length) return nil;
+    if (!cleanPhone.length || ![message isKindOfClass:[NSString class]] || !message.length || !WSMFIsWhatsAppBundle(bundle)) return nil;
 
     NSString *vcard = [NSString stringWithFormat:@"BEGIN:VCARD\r\nVERSION:3.0\r\nPRODID:-//Apple Inc.//iPhone OS 16.2//EN\r\nN:WhatsApp Recipient;;;;\r\nFN:WhatsApp Recipient\r\nTEL;type=CELL;type=VOICE;type=pref:%@\r\nEND:VCARD\r\n",cleanPhone];
     NSData *contactData = [vcard dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *contactValue = @{@"WFContactData":contactData,@"WFContactMultivalue":@0,@"WFContactProperty":@3};
     NSDictionary *recipients = @{@"Value":@{@"WFContactFieldValues":@[contactValue]},@"WFSerializationType":@"WFContactFieldValue"};
-    NSDictionary *intentDefinition = @{@"TeamIdentifier":@"57T9237FN3",@"BundleIdentifier":@"net.whatsapp.WhatsApp",@"Name":@"\u200FWhatsApp",@"IntentClassName":@"INSendMessageIntent"};
+    NSString *appName = [bundle isEqualToString:@"net.whatsapp.WhatsAppSMB"] ? @"WhatsApp Business" : @"WhatsApp";
+    NSDictionary *intentDefinition = @{@"TeamIdentifier":@"57T9237FN3",@"BundleIdentifier":bundle,@"Name":appName,@"IntentClassName":@"INSendMessageIntent"};
     NSDictionary *parameters = @{@"IntentAppDefinition":intentDefinition,@"WFSendMessageActionRecipients":recipients,@"WFSendMessageContent":message,@"ShowWhenRun":@NO,@"UUID":[NSUUID UUID].UUIDString};
     NSDictionary *action = @{@"WFWorkflowActionIdentifier":@"is.workflow.actions.sendmessage",@"WFWorkflowActionParameters":parameters};
     NSDictionary *workflow = @{@"WFWorkflowClientVersion":@"1307.2",@"WFWorkflowClientRelease":@"6.0",@"WFWorkflowMinimumClientVersion":@900,@"WFWorkflowMinimumClientVersionString":@"900",@"WFWorkflowTypes":@[],@"WFWorkflowInputContentItemClasses":@[],@"WFWorkflowIcon":@{@"WFWorkflowIconStartColor":@4282601983,@"WFWorkflowIconGlyphNumber":@61440},@"WFWorkflowActions":@[action]};
@@ -90,7 +91,7 @@ static void SetULL(id obj, const char *selectorName, unsigned long long value) {
     if (obj && [obj respondsToSelector:sel]) ((void(*)(id,SEL,unsigned long long))objc_msgSend)(obj,sel,value);
 }
 
-static BOOL RunWhatsAppShortcut(NSString *scheduleID, NSString *phone, NSString *message) {
+static BOOL RunWhatsAppShortcut(NSString *scheduleID, NSString *phone, NSString *message, NSString *bundle) {
     if (!LoadShortcutFrameworks()) return NO;
 
     Class descriptorClass = NSClassFromString(@"WFWorkflowDataRunDescriptor");
@@ -99,7 +100,7 @@ static BOOL RunWhatsAppShortcut(NSString *scheduleID, NSString *phone, NSString 
     Class controllerClass = NSClassFromString(@"WFOutOfProcessWorkflowController");
     if (!descriptorClass || !requestClass || !contextClass || !controllerClass) return NO;
 
-    NSData *data = WorkflowData(phone,message);
+    NSData *data = WorkflowData(phone,message,bundle);
     if (!data) return NO;
 
     id descriptor = ((id(*)(id,SEL,id))objc_msgSend)(Alloc(descriptorClass),sel_registerName("initWithWorkflowData:"),data);
@@ -288,6 +289,8 @@ static void DrainPending(void) {
         NSString *scheduleID = [job[@"scheduleID"] description] ?: @"unknown";
         NSString *phone = job[@"phone"];
         NSString *message = job[@"message"];
+        NSString *bundle = job[@"bundleID"];
+        if (!WSMFIsWhatsAppBundle(bundle)) bundle = @"net.whatsapp.WhatsApp";
         NSDate *nextAttempt = job[@"nextAttempt"];
 
         if (IsSent(occurrenceKey)) {
@@ -307,7 +310,7 @@ static void DrainPending(void) {
         jobs[occurrenceKey] = job;
         [root writeToFile:kPendingPath atomically:YES];
 
-        BOOL success = RunWhatsAppShortcut(scheduleID,phone,message);
+        BOOL success = RunWhatsAppShortcut(scheduleID,phone,message,bundle);
 
         root = MutablePendingRoot();
         jobs = root[@"jobs"];
