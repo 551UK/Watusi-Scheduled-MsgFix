@@ -98,15 +98,33 @@ static void SpawnShortcutsHelper(void) {
 }
 
 static BOOL QueueShortcutsJob(id sid, NSString *bundle) {
-    if (!sid || !WSMFIsWhatsAppBundle(bundle)) return NO;
+    if (!sid) return NO;
     NSString *scheduleID = [sid description];
     if (!scheduleID.length) return NO;
 
-    id source = WSMFReadScheduleStore(bundle,NULL,NULL);
-    if (!source) return NO;
+    // Watusi can report the normal WhatsApp bundle while running from
+    // WhatsApp Business. Resolve the schedule ID against both stores and use
+    // the app that actually owns the schedule.
+    NSMutableArray<NSString *> *candidateBundles = [NSMutableArray array];
+    if (WSMFIsWhatsAppBundle(bundle)) [candidateBundles addObject:bundle];
+    for (NSString *candidate in @[@"net.whatsapp.WhatsApp",@"net.whatsapp.WhatsAppSMB"]) {
+        if (![candidateBundles containsObject:candidate]) [candidateBundles addObject:candidate];
+    }
 
-    NSDictionary *schedule = WSMFFindScheduleDictionary(source,scheduleID,0);
-    if (!schedule) return NO;
+    NSDictionary *schedule = nil;
+    NSString *resolvedBundle = nil;
+    for (NSString *candidate in candidateBundles) {
+        id source = WSMFReadScheduleStore(candidate,NULL,NULL);
+        if (!source) continue;
+        NSDictionary *found = WSMFFindScheduleDictionary(source,scheduleID,0);
+        if (found) {
+            schedule = found;
+            resolvedBundle = candidate;
+            break;
+        }
+    }
+    if (!schedule || !resolvedBundle.length) return NO;
+    bundle = resolvedBundle;
 
     NSString *message = WSMFScheduleMessage(schedule);
     BOOL groupFound = NO;
